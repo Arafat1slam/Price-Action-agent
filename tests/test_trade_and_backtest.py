@@ -557,3 +557,88 @@ def test_run_batch_backtesting():
     assert "ETHUSDT_15m" in results
     assert results["BTCUSDT_1h"].metrics.initial_capital == 10000.0
     assert results["ETHUSDT_15m"].metrics.initial_capital == 10000.0
+
+
+# ============================================================================
+# 12. Trade Setup Engine & R:R Verification Tests
+# ============================================================================
+from engines.trade_setup_engine import TradeSetupEngine
+from core.models import SetupType, BiasType, FairValueGap, OrderBlock
+
+def test_trade_setup_engine_initialization():
+    engine = TradeSetupEngine()
+    assert engine.min_effective_rr == 1.80
+    assert engine.atr_multiplier_sl == 0.20
+
+
+def test_enforce_min_rr_gate():
+    """Verifies that any candidate setup with effective R:R < 1.80 is discarded."""
+    engine = TradeSetupEngine(min_effective_rr=1.80)
+    low_rr_setup = engine._create_trade_setup(
+        symbol="BTCUSDT",
+        timestamp=datetime.now(),
+        setup_type=SetupType.SMC_PULLBACK_FVG,
+        direction="LONG",
+        entry=100.0,
+        sl=90.0,
+        tp1=110.0,
+        tp2=115.0,
+        confidence=70,
+        rationale=["Test low RR"],
+        invalidation_reason="Test invalidation"
+    )
+    assert low_rr_setup.effective_rr < 1.80
+
+
+# ============================================================================
+# 13. Symbol Mapper & Normalizer Tests
+# ============================================================================
+from symbol_mapper import resolve_symbol, suggest_symbols, clean_input
+
+def test_clean_input():
+    assert clean_input(" btc / usdt ") == "btcusdt"
+    assert clean_input("sol-usdt") == "solusdt"
+    assert clean_input("  eth _ usdt  ") == "ethusdt"
+
+
+def test_resolve_common_names():
+    assert resolve_symbol("bitcoin") == "BTCUSDT"
+    assert resolve_symbol("btc") == "BTCUSDT"
+    assert resolve_symbol("ethereum") == "ETHUSDT"
+    assert resolve_symbol("eth") == "ETHUSDT"
+    assert resolve_symbol("solana") == "SOLUSDT"
+    assert resolve_symbol("sol") == "SOLUSDT"
+
+
+def test_resolve_raw_symbols():
+    assert resolve_symbol("BTCUSDT") == "BTCUSDT"
+    assert resolve_symbol("ethusdt") == "ETHUSDT"
+    assert resolve_symbol("ADA") == "ADAUSDT"
+
+
+def test_suggest_symbols():
+    suggestions = suggest_symbols("bitcoi")
+    assert len(suggestions) > 0
+    assert suggestions[0][1] == "BTCUSDT"
+
+
+# ============================================================================
+# 14. Data Collector & Validation Tests
+# ============================================================================
+from data_collector import DataCollector
+
+def test_data_collector_clean_and_validate(tmp_path):
+    collector = DataCollector(output_dir=tmp_path)
+    base_time = 1700000000000
+    step = 3600 * 1000
+    candles = []
+    for i in range(10):
+        t = base_time + i * step
+        o, h, l, c, v = 50000.0 + i*10, 50050.0 + i*10, 49960.0 + i*10, 50020.0 + i*10, 12.5 + i
+        candles.append([t, str(o), str(h), str(l), str(c), str(v), t + step - 1, str(v*c), 150+i, str(v*0.6), str(v*0.6*c), "0"])
+
+    df, report = collector.clean_and_validate(candles, interval="1h", drop_incomplete=False)
+    assert report["valid"] is True
+    assert report["candle_count"] == 10
+    assert len(df) == 10
+

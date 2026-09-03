@@ -107,6 +107,10 @@ class FairValueGap:
     def is_active(self) -> bool:
         return self.state in [FVGState.UNMITIGATED, FVGState.PARTIALLY_MITIGATED, FVGState.CE_TESTED]
 
+    @property
+    def midpoint(self) -> float:
+        return self.ce
+
 @dataclass
 class OrderBlock:
     ob_type: OBType
@@ -141,6 +145,10 @@ class LiquiditySweep:
     penetration_atr: float
     volume_ratio: float
     is_multi_bar: bool = False
+
+    @property
+    def sweep_level(self) -> float:
+        return self.level_price
 
 @dataclass
 class SwingPoint:

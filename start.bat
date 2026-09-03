@@ -1,9 +1,13 @@
 @echo off
-title Live Price Action Scanner
+title Live Price Action Assistant - AI Cockpit v2.0
 cd /d %~dp0
 
+:: Enable Windows UTF-8 code page & VT100 processing
+chcp 65001 >nul 2>&1
+reg add HKCU\Console /v VirtualTerminalLevel /t REG_DWORD /d 1 /f >nul 2>&1
+
 echo ========================================================
-echo        Starting Live Price Action Scanner Engine
+echo       AI Price Action Assistant - Cockpit v2.0
 echo ========================================================
 echo.
 
