@@ -3,6 +3,28 @@ import pandas as pd
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Any
 
+from core.models import (
+    BiasType,
+    ChartPattern,
+    ConfluenceReport,
+    MLInferenceResult,
+    SetupType,
+    TradeSetup,
+)
+from engines.smc_engine import SMCEngine, SMCAnalysisReport
+from engines.chart_pattern_engine import ChartPatternEngine
+from engines.indicators_engine import (
+    VolumeProfileEngine,
+    VWAPEngine,
+    VSAEngine,
+    KDESupportResistanceEngine,
+    FibonacciEngine,
+    IndicatorConfluenceEngine,
+)
+from engines.ml_predictor import MLPredictor
+from engines.confluence_engine import ConfluenceEngine
+from engines.trade_setup_engine import TradeSetupEngine
+
 @dataclass
 class PatternSignal:
     name: str
@@ -35,6 +57,11 @@ class AnalysisResult:
     momentum_streak: int
     momentum_state: str
     timestamp: str
+    confluence_report: Optional[ConfluenceReport] = None
+    trade_setup: Optional[TradeSetup] = None
+    smc_report: Optional[SMCAnalysisReport] = None
+    chart_patterns: List[ChartPattern] = field(default_factory=list)
+    ml_result: Optional[MLInferenceResult] = None
 
     def to_cli_display(self) -> Dict[str, Any]:
         status_label = "Confirmed closed candle" if self.is_candle_closed else "Live candle forming"
@@ -56,7 +83,8 @@ class AnalysisResult:
             "resistance": resistance_str,
             "target": target_str,
             "volume": self.volume_state,
-            "momentum": self.momentum_state
+            "momentum": self.momentum_state,
+            "trade_setup": self.trade_setup
         }
 
 class PriceActionEngine:
@@ -70,6 +98,15 @@ class PriceActionEngine:
         self.df: pd.DataFrame = pd.DataFrame(
             columns=["timestamp", "open", "high", "low", "close", "volume", "is_closed"]
         )
+        self.smc_engine = SMCEngine()
+        self.chart_pattern_engine = ChartPatternEngine()
+        self.ml_predictor = MLPredictor()
+        self.confluence_engine = ConfluenceEngine(
+            smc_engine=self.smc_engine,
+            chart_pattern_engine=self.chart_pattern_engine,
+            ml_predictor=self.ml_predictor,
+        )
+        self.trade_setup_engine = TradeSetupEngine()
 
     def set_history(self, df: pd.DataFrame):
         """Seed the engine with historical candles."""
@@ -147,13 +184,44 @@ class PriceActionEngine:
 
         pattern_names = [p.name for p in pattern_signals]
 
+        # 7. Advanced Engines Synthesis (Confluence, SMC, Patterns, ML, Trade Setup)
+        confluence_rep: Optional[ConfluenceReport] = None
+        trade_setup: Optional[TradeSetup] = None
+        smc_rep: Optional[SMCAnalysisReport] = None
+        chart_pats: List[ChartPattern] = []
+        ml_res: Optional[MLInferenceResult] = None
+
+        try:
+            confluence_rep = self.confluence_engine.analyze(
+                symbol=symbol,
+                data=df,
+                current_price=current_price,
+                is_closed=is_closed,
+                primary_timeframe=timeframe,
+            )
+            trade_setup = self.trade_setup_engine.generate_setup(
+                confluence_report=confluence_rep,
+                df=df,
+                symbol=symbol,
+            )
+            smc_rep = self.smc_engine.analyze(df)
+            chart_pats = self.chart_pattern_engine.detect_all(df)
+            ml_res = self.ml_predictor.predict(df)
+        except Exception:
+            pass
+
+        final_bias = synthesis["bias"]
+        final_confidence = synthesis["confidence"]
+        if confluence_rep is not None:
+            final_confidence = max(synthesis["confidence"], confluence_rep.confidence_score)
+
         return AnalysisResult(
             symbol=symbol,
             timeframe=timeframe,
             current_price=current_price,
             is_candle_closed=is_closed,
-            bias=synthesis["bias"],
-            confidence=synthesis["confidence"],
+            bias=final_bias,
+            confidence=final_confidence,
             patterns=pattern_names,
             trend=trend_info["trend"],
             trend_detail=trend_info["detail"],
@@ -163,7 +231,12 @@ class PriceActionEngine:
             volume_state=vol_info["state"],
             momentum_streak=mom_info["streak"],
             momentum_state=mom_info["state"],
-            timestamp=ts_str
+            timestamp=ts_str,
+            confluence_report=confluence_rep,
+            trade_setup=trade_setup,
+            smc_report=smc_rep,
+            chart_patterns=chart_pats,
+            ml_result=ml_res,
         )
 
     def _detect_patterns(self, curr: pd.Series, prev: pd.Series, is_closed: bool) -> List[PatternSignal]:

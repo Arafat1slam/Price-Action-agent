@@ -12,7 +12,7 @@ Evaluates calibrated institutional confidence score (50% - 95%) and directional 
 from __future__ import annotations
 
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Any, Union
 import numpy as np
 import pandas as pd
@@ -128,7 +128,7 @@ class ConfluenceEngine:
                 df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
 
         curr_price = float(df["close"].iloc[-1]) if current_price is None else float(current_price)
-        curr_ts = df["timestamp"].iloc[-1] if "timestamp" in df.columns else datetime.utcnow()
+        curr_ts = df["timestamp"].iloc[-1] if "timestamp" in df.columns else datetime.now(timezone.utc)
 
         # 2. Smart Money Concepts (SMC) Analysis
         smc_report = self.smc_engine.analyze(df)
@@ -660,7 +660,7 @@ class ConfluenceEngine:
         """Returns neutral placeholder report when data is insufficient."""
         return ConfluenceReport(
             symbol=symbol,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             current_price=round(current_price, 4),
             overall_bias=BiasType.NEUTRAL,
             confidence_score=50,
