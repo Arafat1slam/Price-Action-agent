@@ -14,6 +14,7 @@ from engines.indicators_engine import (
 )
 from engines.chart_pattern_engine import ChartPatternEngine
 from engines.ml_predictor import MLPredictor, FeatureExtractor
+from engines.ml_engine import LabelGenerator, ModelTrainer, PurgedTimeSeriesSplit
 from engines.confluence_engine import ConfluenceEngine
 from engines.trade_setup_engine import TradeSetupEngine
 from engines.backtest_engine import (
@@ -42,6 +43,9 @@ __all__ = [
     "ChartPatternEngine",
     "MLPredictor",
     "FeatureExtractor",
+    "LabelGenerator",
+    "ModelTrainer",
+    "PurgedTimeSeriesSplit",
     "ConfluenceEngine",
     "TradeSetupEngine",
     "BacktestEngine",

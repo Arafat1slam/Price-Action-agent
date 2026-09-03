@@ -701,7 +701,7 @@ class ModelTrainer:
         self,
         output_dir: str = "models",
         learning_rate: float = 0.04,
-        max_iter: int = 120,
+        max_iter: int = 80,
         max_leaf_nodes: int = 31,
         min_samples_leaf: int = 25,
         l2_regularization: float = 1.5,
@@ -745,19 +745,25 @@ class ModelTrainer:
         )
         base_estimator.fit(X_train, y_train)
 
-        # 2. Probability Calibration via Platt Scaling (Sigmoid)
-        if HAS_FROZEN_ESTIMATOR:
-            calibrator = CalibratedClassifierCV(
-                estimator=FrozenEstimator(base_estimator),
-                method="sigmoid",
-            )
-        else:
-            calibrator = CalibratedClassifierCV(
-                estimator=base_estimator,
-                method="sigmoid",
-                cv="prefit",
-            )
-        calibrator.fit(X_val, y_val)
+        # 2. Probability Calibration via Platt Scaling (Sigmoid) with Balanced Sample Weights
+        import warnings
+        from sklearn.utils.class_weight import compute_sample_weight
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore")
+            if HAS_FROZEN_ESTIMATOR:
+                calibrator = CalibratedClassifierCV(
+                    estimator=FrozenEstimator(base_estimator),
+                    method="sigmoid",
+                )
+            else:
+                calibrator = CalibratedClassifierCV(
+                    estimator=base_estimator,
+                    method="sigmoid",
+                    cv="prefit",
+                )
+            sw_calib = compute_sample_weight("balanced", y_val)
+            calibrator.fit(X_val, y_val, sample_weight=sw_calib)
 
         # 3. Model Evaluation on Validation / Holdout Set
         y_pred = calibrator.predict(X_val)

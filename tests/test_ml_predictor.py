@@ -17,7 +17,11 @@ def create_ohlcv_window(n: int = 60, trend: str = "UP") -> pd.DataFrame:
     rows = []
     for i in range(n):
         p += 1.0 if trend == "UP" else -1.0
-        rows.append([p, p + 2.0, p - 1.0, p + 0.5, 1000.0 + i * 10])
+        o = p
+        c = p + 0.5 if trend == "UP" else p - 0.5
+        h = max(o, c) + 1.0
+        l = min(o, c) - 1.0
+        rows.append([o, h, l, c, 1000.0 + i * 10])
     df = pd.DataFrame(rows, columns=["open", "high", "low", "close", "volume"])
     df["timestamp"] = dates
     return df
@@ -32,13 +36,12 @@ def test_feature_extractor_35_features():
 
     assert len(feats) == 60
     assert len(feats.columns) == 35
-    # Ensure no NaN or infinite values
     assert not feats.isna().any().any()
     assert not np.isinf(feats.values).any()
 
 
 def test_ml_predictor_fallback_and_types():
-    predictor = MLPredictor()
+    predictor = MLPredictor(model_path="non_existent_model.joblib")
     df = create_ohlcv_window(n=60, trend="UP")
     res = predictor.predict(df)
 
@@ -52,8 +55,9 @@ def test_ml_predictor_fallback_and_types():
     assert len(res.feature_contributions) > 0
 
 
-def test_ml_predictor_sensitivity():
-    predictor = MLPredictor()
+def test_ml_predictor_directional_sensitivity():
+    # Test statistical inference engine directional sensitivity
+    predictor = MLPredictor(model_path="non_existent_model.joblib")
     df_bull = create_ohlcv_window(n=60, trend="UP")
     df_bear = create_ohlcv_window(n=60, trend="DOWN")
 
@@ -64,3 +68,16 @@ def test_ml_predictor_sensitivity():
     assert res_bull.prob_bullish > res_bull.prob_bearish
     # Bearish data should have higher prob_bearish than prob_bullish
     assert res_bear.prob_bearish > res_bear.prob_bullish
+
+
+def test_ml_predictor_with_serialized_bundle():
+    predictor = MLPredictor()
+    df = create_ohlcv_window(n=60, trend="UP")
+    res = predictor.predict(df)
+
+    assert isinstance(res, MLInferenceResult)
+    assert 0.0 <= res.prob_bullish <= 1.0
+    assert 0.0 <= res.prob_bearish <= 1.0
+    assert 0.0 <= res.prob_neutral <= 1.0
+    assert abs((res.prob_bullish + res.prob_bearish + res.prob_neutral) - 1.0) < 1e-3
+    assert 0.0 <= res.model_confidence <= 1.0

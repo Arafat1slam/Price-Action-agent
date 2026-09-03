@@ -171,7 +171,7 @@ class MLPredictor:
 
     def load_model(self) -> bool:
         """Loads serialized model bundle if present on disk."""
-        if os.path.exists(self.model_path):
+        if self.model_path and os.path.exists(self.model_path):
             try:
                 self.bundle = joblib.load(self.model_path)
                 self.model = self.bundle.get("model")
@@ -179,6 +179,16 @@ class MLPredictor:
             except Exception:
                 self.model = None
                 return False
+        elif self.model_path in ("models/price_action_ml_model.joblib", "models/price_action_model.joblib", None):
+            for path in ["models/price_action_model.joblib", "models/price_action_ml_model.joblib"]:
+                if os.path.exists(path):
+                    try:
+                        self.bundle = joblib.load(path)
+                        self.model = self.bundle.get("model")
+                        if self.model is not None:
+                            return True
+                    except Exception:
+                        pass
         return False
 
     def predict(self, df_window: pd.DataFrame) -> MLInferenceResult:

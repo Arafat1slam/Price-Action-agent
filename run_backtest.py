@@ -11,7 +11,7 @@ import sys
 import argparse
 from pathlib import Path
 from typing import Dict, List, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Configure Windows console encoding for UTF-8 compatibility
 if sys.platform == "win32":
@@ -85,7 +85,7 @@ def generate_markdown_report(results: List[BacktestResult], output_path: Path, c
     Generates an institutional quantitative markdown report summarizing all backtest benchmarks.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     # Aggregate stats
     total_trades_all = sum(r.metrics.total_trades for r in results)
@@ -220,7 +220,7 @@ def generate_markdown_report(results: List[BacktestResult], output_path: Path, c
     ])
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
-    console.print(f"[bold green]✓ Benchmark report successfully written to:[/] {output_path}")
+    console.print(f"[bold green][+] Benchmark report successfully written to:[/] {output_path}")
 
 
 def main() -> None:
@@ -258,10 +258,10 @@ def main() -> None:
         for tf in timeframes:
             csv_path = DATA_DIR / f"{symbol}_{tf}.csv"
             if not csv_path.exists():
-                console.print(f"[bold red]✗ Missing dataset file:[/] {csv_path}")
+                console.print(f"[bold red][!] Missing dataset file:[/] {csv_path}")
                 continue
 
-            console.print(f"\n[cyan]▶ Running Backtest:[/] [bold white]{symbol}[/] [dim]({tf})[/dim] on {csv_path.name}...")
+            console.print(f"\n[cyan][>] Running Backtest:[/] [bold white]{symbol}[/] [dim]({tf})[/dim] on {csv_path.name}...")
             df = pd.read_csv(csv_path)
 
             res = engine.run(
@@ -277,7 +277,7 @@ def main() -> None:
             console.print(summary_tbl)
 
     if not results:
-        console.print("[bold red]No valid backtests completed. Check data directory.[/bold red]")
+        console.print("[bold red][!] No valid backtests completed. Check data directory.[/bold red]")
         sys.exit(1)
 
     # Consolidated Master Table
@@ -289,7 +289,7 @@ def main() -> None:
     report_file = Path(args.report_file)
     generate_markdown_report(results, report_file, config)
 
-    console.print("\n[bold green]✓ All backtest benchmarks completed successfully.[/bold green]\n")
+    console.print("\n[bold green][+] All backtest benchmarks completed successfully.[/bold green]\n")
 
 
 if __name__ == "__main__":

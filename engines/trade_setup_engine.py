@@ -57,8 +57,24 @@ class TradeSetupEngine:
         if not candidates:
             return None
 
-        # Rank candidates by: 1. Effective R:R, 2. Confluence confidence score
-        candidates.sort(key=lambda s: (s.effective_rr >= self.min_effective_rr, s.effective_rr), reverse=True)
+        # Priority weighting: SMC Core Continuation (FVG / OB) > Liquidity Sweep > Chart Pattern > Value Area
+        setup_priority = {
+            SetupType.SMC_PULLBACK_FVG: 5,
+            SetupType.SMC_ORDER_BLOCK: 4,
+            SetupType.LIQUIDITY_SWEEP_REVERSAL: 3,
+            SetupType.CHART_PATTERN_BREAKOUT: 2,
+            SetupType.VALUE_AREA_MEAN_REVERSION: 1,
+        }
+
+        # Rank candidates by: 1. Setup priority, 2. Effective R:R
+        candidates.sort(
+            key=lambda s: (
+                setup_priority.get(s.setup_type, 0),
+                s.effective_rr >= self.min_effective_rr,
+                s.effective_rr
+            ),
+            reverse=True
+        )
         best = candidates[0]
         return best if best.effective_rr >= self.min_effective_rr else None
 
@@ -70,6 +86,7 @@ class TradeSetupEngine:
     ) -> List[TradeSetup]:
         """
         Scans all 5 setup archetypes and returns all structurally valid trade setups.
+        Enforces top-down macro directional permissioning.
         """
         if len(df) < 14:
             return []
@@ -110,8 +127,17 @@ class TradeSetupEngine:
         if pattern_setup:
             setups.append(pattern_setup)
 
-        # Filter strictly for positive risk distance and valid R:R >= MIN_EFFECTIVE_RR
-        valid_setups = [s for s in setups if s.effective_rr >= self.min_effective_rr]
+        # Filter strictly for positive risk distance, valid R:R >= MIN_EFFECTIVE_RR, and directional alignment
+        valid_setups = []
+        for s in setups:
+            if s.effective_rr < self.min_effective_rr:
+                continue
+            if overall_bias in [BiasType.BULLISH, BiasType.STRONG_BULLISH] and s.direction != "LONG":
+                continue
+            if overall_bias in [BiasType.BEARISH, BiasType.STRONG_BEARISH] and s.direction != "SHORT":
+                continue
+            valid_setups.append(s)
+
         return valid_setups
 
     # ------------------------------------------------------------------------
@@ -311,61 +337,63 @@ class TradeSetupEngine:
 
             # Bullish SSL Sweep (Turtle Soup long reversal)
             if lw >= 0.40 and l == min(lows[-15:]):
-                entry = round(current_price, 4)
-                sl = round(l - atr_buffer, 4)
-                risk = entry - sl
-                if risk <= 0:
-                    continue
+                if rep.overall_bias in [BiasType.BULLISH, BiasType.STRONG_BULLISH, BiasType.NEUTRAL]:
+                    entry = round(current_price, 4)
+                    sl = round(l - atr_buffer, 4)
+                    risk = entry - sl
+                    if risk <= 0:
+                        continue
 
-                tp1 = round(entry + max(1.5 * risk, 1.2 * atr14), 4)
-                tp2 = round(entry + max(2.8 * risk, 2.5 * atr14), 4)
+                    tp1 = round(entry + max(1.5 * risk, 1.2 * atr14), 4)
+                    tp2 = round(entry + max(2.8 * risk, 2.5 * atr14), 4)
 
-                return self._create_trade_setup(
-                    symbol=symbol,
-                    timestamp=timestamp,
-                    setup_type=SetupType.LIQUIDITY_SWEEP_REVERSAL,
-                    direction="LONG",
-                    entry=entry,
-                    sl=sl,
-                    tp1=tp1,
-                    tp2=tp2,
-                    confidence=confidence,
-                    rationale=[
-                        f"Sell-Side Liquidity (SSL) sweep at swing low ${l:,.2f}",
-                        f"Significant wick rejection of {lw*100:.1f}% indicates stop-run absorption",
-                        f"Stop Loss anchored below the sweep extreme at ${sl:,.2f}"
-                    ],
-                    invalidation_reason=f"Breach and acceptance below sweep low ${l:,.2f}"
-                )
+                    return self._create_trade_setup(
+                        symbol=symbol,
+                        timestamp=timestamp,
+                        setup_type=SetupType.LIQUIDITY_SWEEP_REVERSAL,
+                        direction="LONG",
+                        entry=entry,
+                        sl=sl,
+                        tp1=tp1,
+                        tp2=tp2,
+                        confidence=confidence,
+                        rationale=[
+                            f"Sell-Side Liquidity (SSL) sweep at swing low ${l:,.2f}",
+                            f"Significant wick rejection of {lw*100:.1f}% indicates stop-run absorption",
+                            f"Stop Loss anchored below the sweep extreme at ${sl:,.2f}"
+                        ],
+                        invalidation_reason=f"Breach and acceptance below sweep low ${l:,.2f}"
+                    )
 
             # Bearish BSL Sweep (Turtle Soup short reversal)
             elif uw >= 0.40 and h == max(highs[-15:]):
-                entry = round(current_price, 4)
-                sl = round(h + atr_buffer, 4)
-                risk = sl - entry
-                if risk <= 0:
-                    continue
+                if rep.overall_bias in [BiasType.BEARISH, BiasType.STRONG_BEARISH, BiasType.NEUTRAL]:
+                    entry = round(current_price, 4)
+                    sl = round(h + atr_buffer, 4)
+                    risk = sl - entry
+                    if risk <= 0:
+                        continue
 
-                tp1 = round(entry - max(1.5 * risk, 1.2 * atr14), 4)
-                tp2 = round(entry - max(2.8 * risk, 2.5 * atr14), 4)
+                    tp1 = round(entry - max(1.5 * risk, 1.2 * atr14), 4)
+                    tp2 = round(entry - max(2.8 * risk, 2.5 * atr14), 4)
 
-                return self._create_trade_setup(
-                    symbol=symbol,
-                    timestamp=timestamp,
-                    setup_type=SetupType.LIQUIDITY_SWEEP_REVERSAL,
-                    direction="SHORT",
-                    entry=entry,
-                    sl=sl,
-                    tp1=tp1,
-                    tp2=tp2,
-                    confidence=confidence,
-                    rationale=[
-                        f"Buy-Side Liquidity (BSL) sweep at swing high ${h:,.2f}",
-                        f"Significant wick rejection of {uw*100:.1f}% indicates institutional distribution",
-                        f"Stop Loss anchored above the sweep extreme at ${sl:,.2f}"
-                    ],
-                    invalidation_reason=f"Breach and acceptance above sweep high ${h:,.2f}"
-                )
+                    return self._create_trade_setup(
+                        symbol=symbol,
+                        timestamp=timestamp,
+                        setup_type=SetupType.LIQUIDITY_SWEEP_REVERSAL,
+                        direction="SHORT",
+                        entry=entry,
+                        sl=sl,
+                        tp1=tp1,
+                        tp2=tp2,
+                        confidence=confidence,
+                        rationale=[
+                            f"Buy-Side Liquidity (BSL) sweep at swing high ${h:,.2f}",
+                            f"Significant wick rejection of {uw*100:.1f}% indicates institutional distribution",
+                            f"Stop Loss anchored above the sweep extreme at ${sl:,.2f}"
+                        ],
+                        invalidation_reason=f"Breach and acceptance above sweep high ${h:,.2f}"
+                    )
         return None
 
     # ------------------------------------------------------------------------
@@ -485,10 +513,10 @@ class TradeSetupEngine:
             if risk <= 0:
                 return None
 
-            tp1 = round(entry + max(1.5 * risk, 1.2 * atr14), 4)
-            tp2 = round(best_pat.projected_target or (entry + max(2.8 * risk, 2.5 * atr14)), 4)
-            if tp2 <= tp1:
-                tp2 = round(entry + 2.8 * risk, 4)
+            tp1 = round(entry + max(1.6 * risk, 1.2 * atr14), 4)
+            min_tp2 = entry + max(2.8 * risk, 2.5 * atr14)
+            target = max(best_pat.projected_target or 0.0, min_tp2)
+            tp2 = round(target, 4)
 
             return self._create_trade_setup(
                 symbol=symbol,
@@ -515,10 +543,10 @@ class TradeSetupEngine:
             if risk <= 0:
                 return None
 
-            tp1 = round(entry - max(1.5 * risk, 1.2 * atr14), 4)
-            tp2 = round(best_pat.projected_target or (entry - max(2.8 * risk, 2.5 * atr14)), 4)
-            if tp2 >= tp1:
-                tp2 = round(entry - 2.8 * risk, 4)
+            tp1 = round(entry - max(1.6 * risk, 1.2 * atr14), 4)
+            min_tp2 = entry - max(2.8 * risk, 2.5 * atr14)
+            target = min(best_pat.projected_target or 1e12, min_tp2)
+            tp2 = round(target, 4)
 
             return self._create_trade_setup(
                 symbol=symbol,

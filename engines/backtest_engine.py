@@ -524,7 +524,7 @@ class BacktestEngine:
             final_record = self._close_position_at_market(
                 pos=active_position,
                 t=n - 1,
-                exit_price=close[-1],
+                market_price=close[-1],
                 timestamp=ts[-1],
                 reason=ExitReason.END_OF_DATA,
                 cfg=cfg,
@@ -1150,10 +1150,11 @@ class BacktestEngine:
         vol_sma = pd.Series(vol).rolling(20, min_periods=1).mean().values
 
         # Trend Filter EMA
-        ema_trend = pd.Series(close).ewm(span=strat.trend_ema_span, adjust=False).mean().values
+        trend_span = getattr(strat, "trend_ema_span", 50)
+        ema_trend = pd.Series(close).ewm(span=trend_span, adjust=False).mean().values
 
         # Fractal Swings (radius=3, confirmed at k + 3)
-        r = strat.swing_radius
+        r = getattr(strat, "swing_radius", 3)
         n = len(df)
         sh_list: List[Tuple[int, float, int]] = []
         sl_list: List[Tuple[int, float, int]] = []
