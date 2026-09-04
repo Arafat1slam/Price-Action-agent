@@ -69,7 +69,7 @@ def parse_arguments() -> argparse.Namespace:
         "--risk",
         type=float,
         default=0.015,
-        help="Fractional risk per trade (e.g. 0.015 = 1.5%)",
+        help="Fractional risk per trade (e.g. 0.015 = 1.5%%)",
     )
     parser.add_argument(
         "--latency",

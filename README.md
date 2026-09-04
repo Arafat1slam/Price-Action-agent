@@ -2,161 +2,402 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-92%20passed-brightgreen.svg)]()
-[![Inference](https://img.shields.io/badge/ML%20Latency-4.07ms-success.svg)]()
+[![Tests: 155 Passed](https://img.shields.io/badge/unit%20tests-155%20passed-brightgreen.svg)]()
+[![Inference Latency](https://img.shields.io/badge/ML%20Latency-4.07ms-success.svg)]()
+[![Code Architecture](https://img.shields.io/badge/Architecture-Modular%20Engines-orange.svg)]()
 
-An institutional-grade, multi-dimensional AI Price Action Trading Assistant and Live Real-Time Cockpit built in Python.
-
-It combines **Smart Money Concepts (SMC)**, **Auction Market Volume Profile (POC/VAH/VAL)**, **Wyckoff Volume Spread Analysis (VSA)**, **Kernel Density Estimation (KDE) Support & Resistance**, **Multi-Timeframe Confluence**, and a **Calibrated Machine Learning Inference Engine** with sub-5ms CPU response times.
-
----
-
-## Key Capabilities
-
-### 1. Interactive AI Assistant & Natural Language Chat
-- Type any crypto name or command: `btc`, `eth`, `sol`, `doge`, `ada`, `bnb`.
-- Chat naturally: *"how is bitcoin looking?"*, *"is eth bullish?"*, *"what is the trend?"*.
-- Instant commands:
-  - `stream` / `live`: Enter persistent, tick-by-tick real-time streaming view.
-  - `setup` / `signal`: View active institutional trade setup plan with entry, stop loss, and take-profit targets.
-  - `smc`: View Smart Money Concepts breakdown (FVG, Order Blocks, Liquidity Sweeps, BOS, CHoCH).
-  - `levels`: View Support & Resistance zones, Volume Profile (POC/VAH/VAL), and VWAP bands.
-  - `ml`: View machine learning prediction, directional confidence, and win probability breakdown.
-  - `tf <15m|1h|4h|1d>`: Dynamically switch timeframes on the fly.
-  - `backtest`: Run instant strategy backtest benchmarks.
-
-### 2. Smart Money Concepts (SMC) & Market Structure
-- **Fair Value Gaps (FVG):** Bullish (BISI) and Bearish (SIBI) 3-candle imbalance detection with 50% Consequent Encroachment (CE) and dynamic stateful mitigation/inversion tracking.
-- **Order Blocks (OB):** Institutional supply/demand zones with strict 4-pillar quantitative validation (displacement $\ge 1.5\times \text{ATR}$, FVG confirmation, structural breach, and Breaker Block transitions).
-- **Liquidity Sweeps:** Stop-hunt sweeps (BSL / SSL) with $\ge 35\%$ wick rejection ratio, volume expansion, and Turtle Soup multi-bar reversals.
-- **Market Structure Transitions:** Zero-lookahead fractal swings ($R=3$), Break of Structure (BOS) trend continuation, and Change of Character (CHoCH) structural trend reversals.
-
-### 3. Quantitative Volume & Statistical S/R
-- **Volume Profile:** Equidistant price binning allocating candle volume across geometric overlaps to determine Point of Control (POC), Value Area High (VAH), and Value Area Low (VAL) ($70\%$ volume zone).
-- **VWAP & Variance Bands:** Rolling and anchored VWAP with $\pm 1\sigma, \pm 2\sigma, \pm 3\sigma$ dispersion bands detecting statistical mean-reversion exhaustion.
-- **Wyckoff VSA:** Effort vs. result modeling, Stopping Volume / Absorption, No Supply and No Demand tests, and Climax volume exhaustion.
-- **Kernel Density Estimation (KDE) S/R:** Continuous Gaussian KDE (`scipy.stats.gaussian_kde`) with adaptive ATR bandwidth identifying prominent support & resistance zones and polarity flips.
-- **Dynamic Fibonacci:** Swing-anchored retracements ($0.236, 0.382, 0.500, 0.618$ Golden Pocket, $0.786$) and extension projections.
-
-### 4. Machine Learning Inference Engine
-- **Architecture:** CPU-native `HistGradientBoostingClassifier` calibrated with Platt scaling (`CalibratedClassifierCV`).
-- **Feature Vector:** 35 scale-invariant features covering candlestick geometry, multi-horizon returns, normalized ATR, volume z-scores, distance to POC/VWAP/KDE S/R, RSI slope, EMA stacks, and SMC flags.
-- **Hardware Performance:** Trained on **60,000 real Binance historical candles**; model file is only **0.397 MB** with an average inference latency of **4.07 ms** on CPU (0 GPU required).
-
-### 5. Institutional Trade Setup Generator
-- Strict Effective Risk-to-Reward gate:
-  $$\text{Effective } R:R = 0.5 \times R:R_{\text{TP1}} + 0.5 \times R:R_{\text{TP2}} \ge 1.80$$
-- Invalidation stop loss placed beyond structural swing / Order Block / sweep boundaries ($+ 0.2\times\text{ATR}$ buffer).
-- Take Profit 1 (TP1) scales out 50% position and moves stop loss to Breakeven; Take Profit 2 (TP2) targets extension levels.
+> **Developed by [Arafat Islam](https://github.com/Arafat1slam)**  
+> *Institutional-Grade Multi-Dimensional Price Action Assistant, Live Confluence Cockpit & Event-Driven Trading Simulator.*
 
 ---
 
-## Project Structure
+## 📑 Table of Contents
+1. [Overview](#-overview)
+2. [What's New in v2.0](#-whats-new-in-v20)
+3. [Key Pillars & Engines](#-key-pillars--engines)
+4. [Quick Start (One-Click Windows)](#-quick-start-one-click-windows)
+5. [Manual Installation (Windows, Linux, macOS)](#-manual-installation-windows-linux-macos)
+6. [Interactive Terminal & Assistant Usage](#-interactive-terminal--assistant-usage)
+7. [Command-Line Options (CLI)](#-command-line-options-cli)
+8. [Data Collection, Training & Backtesting](#-data-collection-training--backtesting)
+9. [Running the Unit Test Suite](#-running-the-unit-test-suite)
+10. [Repository Structure](#-repository-structure)
+11. [Configuration (`.env`)](#-configuration-env)
+12. [Developer Attribution & Anti-Tamper Security](#-developer-attribution--anti-tamper-security)
+13. [License & Disclaimer](#-license--disclaimer)
+
+---
+
+## 🌟 Overview
+
+The **AI Price Action Assistant & Institutional Cockpit** is an advanced, production-grade terminal application engineered for cryptocurrency market analysis, live trade execution planning, and quantitative backtesting.
+
+Unlike conventional technical analysis tools that rely on lagging indicator crossovers, this engine combines **first-principles Auction Market Theory**, **Smart Money Concepts (SMC)**, **Volume Spread Analysis (VSA)**, and **Calibrated Machine Learning** to detect real institutional footprints (liquidity hunts, imbalances, order absorption, and structural breaks).
+
+### Why use this engine?
+- **Zero Terminal Flicker (Zero-Blink):** Smooth in-place ANSI rendering (`\033[H`) with live tick updates without screen blinking or runaway console scroll.
+- **Synchronized Multi-Timeframe Confluence:** Simultaneously tracks **5m, 15m, 1h, and 4h** timeframes to ensure lower-timeframe trades align with higher-timeframe order flow.
+- **Market Regime Detection:** Distinguishes between trending, ranging, breakout, and choppy conditions to recommend the optimal trading playbook.
+- **Limit Execution State Machine:** Eliminates FOMO by holding signals in `WAITING_CONFIRMATION` until price retraces into the optimal entry zone.
+- **Position-State Awareness:** Suppresses opposite signals while a trade is open to prevent whipsawing, and warns of early momentum exhaustion.
+- **Ultra-Fast ML Inference:** Sub-5ms CPU inference latency using a calibrated `HistGradientBoostingClassifier` trained on 60,000 historical candles.
+
+---
+
+## 🚀 What's New in v2.0
+
+| Feature | Description |
+|---|---|
+| 🧙 **Interactive Setup Wizard** | Prompts on launch for market (`btc`, `eth`, `sol`, etc.) and style (`1` Scalp 5m, `2` Intraday 15m/1h, `3` Swing 4h/1d). |
+| ⏱️ **Synchronized MTF Engine** | 4-timeframe concurrency (4h: 35%, 1h: 30%, 15m: 20%, 5m: 15%) evaluating aligned market bias. |
+| 🧭 **Market Regime Classifier** | Categorizes market into `TRENDING_BULL`, `TRENDING_BEAR`, `RANGING`, `BREAKOUT`, and `HIGH_VOLATILITY_CHOP`. |
+| 💯 **0–100 Trade Quality Score** | Unified grading system: `A+` (85–100), `A` (75–84), `B` (65–74), `C` (45–64), and `FILTERED` (<45). |
+| 🎯 **Limit Confirmation Engine** | Real-time monitoring of candle opens, highs, lows, closes, and volume before confirming trade entries. |
+| 🎮 **Position State & Live Keys** | Press `1` in live mode to mark trade entered, `2` to close/flatten. Live PnL and R:R tracking. |
+| 🔬 **Purged Walk-Forward ML** | Validates models with time-series splits and embargo buffers, reporting Out-of-Sample Sharpe and Max DD. |
+| 📉 **Realistic Backtesting** | Volatility dynamic spread, non-linear market impact slippage, latency drift (85ms), and intracandle path reconstruction (`O->L->H->C`). |
+| 🛡️ **Author Security & Integrity** | Permanent cryptographic protection of developer attribution (`Arafat Islam`) via SHA-256 validation. |
+
+---
+
+## 🧠 Key Pillars & Engines
+
+```
+                               ┌──────────────────────────────────────────────┐
+                               │           LIVE MARKET DATA FEED              │
+                               │   Binance REST (klines) + Resilient WebSocket│
+                               └──────────────────────┬───────────────────────┘
+                                                      │
+                       ┌──────────────────────────────┴──────────────────────────────┐
+                       ▼                                                             ▼
+         ┌───────────────────────────┐                                 ┌───────────────────────────┐
+         │        SMC ENGINE         │                                 │    INDICATORS & VOLUME    │
+         │ • Fair Value Gaps (FVG)   │                                 │ • Volume Profile (POC/VAH)│
+         │ • Order Blocks (OB)       │                                 │ • VWAP ±1/2/3σ Bands      │
+         │ • Liquidity Sweeps (BSL)  │                                 │ • Wyckoff VSA Analysis    │
+         │ • BOS & CHoCH Structure   │                                 │ • KDE Support/Resistance  │
+         └─────────────┬─────────────┘                                 └─────────────┬─────────────┘
+                       │                                                             │
+                       └──────────────────────────────┬──────────────────────────────┘
+                                                      ▼
+                                       ┌─────────────────────────────┐
+                                       │    CONFLUENCE SYNTHESIS     │
+                                       │ • Multi-Timeframe (5m-4h)   │
+                                       │ • Market Regime Detection   │
+                                       │ • Calibrated ML Inference   │
+                                       └──────────────┬──────────────┘
+                                                      │
+                       ┌──────────────────────────────┴──────────────────────────────┐
+                       ▼                                                             ▼
+         ┌───────────────────────────┐                                 ┌───────────────────────────┐
+         │    TRADE SETUP ENGINE     │                                 │   POSITION STATE MGR      │
+         │ • Quality Score (0-100)   │                                 │ • Whipsaw Suppression     │
+         │ • Min R:R Gate (>= 1.80)  │                                 │ • Peak R:R Drawdown Alert │
+         │ • Confirmation Retest     │                                 │ • Interactive [1]/[2] Keys│
+         └─────────────┬─────────────┘                                 └─────────────┬─────────────┘
+                       │                                                             │
+                       └──────────────────────────────┬──────────────────────────────┘
+                                                      ▼
+                                       ┌─────────────────────────────┐
+                                       │   SPACIOUS LIVE COCKPIT     │
+                                       │  Zero-Blink Rich Terminal UI│
+                                       └─────────────────────────────┘
+```
+
+### 1. Smart Money Concepts (SMC)
+- **Fair Value Gaps (FVG):** Detects 3-candle price imbalances for Bullish (BISI) and Bearish (SIBI) gaps, tracks Consequent Encroachment (50% midpoint), and monitors real-time mitigation and inversion flips.
+- **Order Blocks (OB):** High-probability institutional order blocks verified by 4 strict quantitative pillars: impulsive displacement $\ge 1.5\times\text{ATR}$, structural break confirmation, FVG generation, and Breaker Block flips.
+- **Liquidity Sweeps:** Identifies stop-hunt sweeps above Buy-Side Liquidity (BSL) or below Sell-Side Liquidity (SSL) with $\ge 35\%$ wick rejection and volume expansion.
+- **Market Structure:** Zero-lookahead fractal swings ($R=3$), Break of Structure (BOS) for trend continuation, and Change of Character (CHoCH) for structural reversals confirmed by candle body closes.
+
+### 2. Volume Profile & Statistical Support/Resistance
+- **Volume Profile (VP):** Equidistant geometric binning mapping candle volume to pinpoint the **Point of Control (POC)** and the **Value Area (VAH & VAL)** containing 70% of traded volume.
+- **VWAP & Dispersion Bands:** Session-anchored and rolling VWAP with $\pm 1\sigma, \pm 2\sigma, \pm 3\sigma$ standard deviation bands for statistical mean-reversion exhaustion.
+- **Wyckoff Volume Spread Analysis (VSA):** Analyzes volume vs. candle spread to detect Stopping Volume / Absorption, No Supply and No Demand tests, and Climax volume exhaustion.
+- **Kernel Density Estimation (KDE) S/R:** Continuous Gaussian KDE (`scipy.stats.gaussian_kde`) with adaptive ATR bandwidth finding prominent horizontal support/resistance zones.
+
+### 3. Calibrated Machine Learning Engine
+- **Model:** CPU-native `HistGradientBoostingClassifier` with Platt scaling calibration (`CalibratedClassifierCV`).
+- **Feature Set:** 35 scale-invariant features extracting candle geometry, multi-horizon returns, normalized ATR, volume z-scores, distance to POC/VWAP/KDE S/R, RSI slope, and SMC flags.
+- **Performance:** Model file size is only **0.397 MB** and executes in **4.07 ms** per tick on a single CPU core.
+- **Validation:** Evaluated via Purged Walk-Forward cross-validation with embargo buffers to eliminate lookahead bias.
+
+### 4. Trade Quality Scoring & Risk Engine
+- **Quality Score (0–100):** Synthesizes SMC alignment (25%), Structure & Regime (25%), Multi-Timeframe agreement (20%), ML probability (15%), and Volume profile/VSA (15%).
+- **Grades:**
+  - `A+` (85–100): Premium institutional setup with highest confluence.
+  - `A` (75–84): Strong setup aligned with higher-timeframe order flow.
+  - `B` (65–74): Standard tradable setup with valid structural invalidation.
+  - `C` (45–64): Marginal setup with lower confluence; requires strict limit entry.
+  - `FILTERED` (<45): Blocked from execution to protect capital.
+- **Risk-Reward Gate:** Enforces $\text{Effective } R:R \ge 1.80$, scaling out 50% at TP1 (moving stop loss to Breakeven) and letting a runner target TP2.
+
+---
+
+## ⚡ Quick Start (One-Click Windows)
+
+If you are on Windows, setup and launch is 100% automated:
+
+1. **Download or Clone the Repository:**
+   ```bat
+   git clone https://github.com/Arafat1slam/Price-Action-agent.git
+   cd Price-Action-agent
+   ```
+2. **Double-Click `start.bat`:**
+   - Automatically checks for Python 3.10+.
+   - Sets up the isolated virtual environment (`venv`).
+   - Automatically installs/updates all required packages.
+   - Configures native Windows ANSI VT100 colors and UTF-8 encoding.
+   - Launches the Interactive Setup Wizard.
+
+---
+
+## 🛠️ Manual Installation (Windows, Linux, macOS)
+
+### 1. Prerequisites
+- **Python 3.10 or higher** (Python 3.11 or 3.12 recommended).
+- **Git** installed on your system.
+
+### 2. Clone & Setup Environment
+
+```bash
+# Clone repository
+git clone https://github.com/Arafat1slam/Price-Action-agent.git
+cd Price-Action-agent
+
+# Create virtual environment
+python -m venv venv
+
+# Activate virtual environment
+# On Windows (PowerShell):
+.\venv\Scripts\Activate.ps1
+# On Windows (Command Prompt):
+.\venv\Scripts\activate.bat
+# On macOS / Linux:
+source venv/bin/activate
+
+# Upgrade pip & install dependencies
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+---
+
+## 💻 Interactive Terminal & Assistant Usage
+
+Start the interactive terminal:
+```bash
+python main.py
+```
+
+### The Setup Wizard
+On startup, the assistant prompts two simple questions:
+```
+? Which market would you like to scan? (e.g. btc, sol, eth, bnb, doge, or raw BTCUSDT)
+> btc
+
+? Which trading style would you prefer?
+  1) Scalp    (5m focus — fast triggers & tighter stops)
+  2) Intraday (15m / 1h focus — balanced swings & order blocks)
+  3) Swing    (4h / 1d focus — macro trends & major S/R)
+> 2
+```
+
+### In-Session Commands
+Inside the assistant, you can type natural inquiries or quick commands:
+
+| Command | Action |
+|---|---|
+| `stream` or `live` | Enters the persistent, real-time live cockpit. |
+| `setup` or `signal`| Shows the active trade setup card, entry price, SL, TP1, and TP2. |
+| `score` or `quality`| Shows the 0–100 trade quality breakdown and assigned grade. |
+| `regime` | Displays current market regime (`TRENDING_BULL`, `RANGING`, etc.). |
+| `smc` | Shows active Fair Value Gaps, Order Blocks, Liquidity Sweeps, and BOS/CHoCH. |
+| `levels` | Displays horizontal KDE Support/Resistance, Volume Profile POC, and VWAP bands. |
+| `ml` | Displays machine learning probability predictions and model confidence. |
+| `tf <timeframe>` | Switches active timeframe (e.g. `tf 15m`, `tf 1h`, `tf 4h`). |
+| `btc`, `eth`, `sol` | Instantly switches the active market symbol. |
+| `backtest` | Executes an instant strategy backtest on the current symbol. |
+| `help` | Lists all available commands and keyboard shortcuts. |
+| `exit` or `quit` | Exits the assistant safely. |
+
+### Live Cockpit Interactive Keys
+While running in live streaming mode (`stream`):
+- **Press `1`:** Confirm taking the active trade setup (switches state to `OPEN_LONG` or `OPEN_SHORT`).
+- **Press `2`:** Manually close / flatten the position.
+- **Press `Ctrl + C`:** Return safely to the assistant chat prompt.
+
+---
+
+## ⚙️ Command-Line Options (CLI)
+
+You can launch directly with custom parameters:
+
+```bash
+# Launch directly into real-time live streaming mode for SOL
+python main.py --stream --symbol SOLUSDT --timeframe 15m
+
+# Run in single-pass demo mode (inspects current state and exits)
+python main.py --demo --symbol ETHUSDT
+
+# Skip interactive wizard and use default/CLI parameters
+python main.py --no-wizard --symbol BTCUSDT --timeframe 1h
+```
+
+---
+
+## 📊 Data Collection, Training & Backtesting
+
+### 1. Harvest Historical Data
+Download thousands of real Binance candles across symbols and timeframes:
+```bash
+python data_collector.py --symbols BTCUSDT ETHUSDT SOLUSDT BNBUSDT --timeframes 15m 1h 4h --candles 5000
+```
+Data is cleaned, validated, and saved into `data/historical/`.
+
+### 2. Train Machine Learning Models
+Train the calibrated `HistGradientBoostingClassifier` on historical datasets:
+```bash
+# Standard training and calibration
+python train_model.py
+
+# Train with Purged Walk-Forward Cross-Validation report
+python train_model.py --walk-forward
+```
+The trained model is saved to `models/price_action_model.joblib`.
+
+### 3. Run Realistic Strategy Backtests
+Benchmark the strategy using the institutional event-driven backtesting engine:
+```bash
+# Run default multi-symbol benchmark
+python run_backtest.py
+
+# Custom backtest parameters
+python run_backtest.py --symbols BTCUSDT,ETHUSDT,SOLUSDT --timeframes 1h,15m --capital 10000 --risk 0.015 --latency 85.0
+```
+Generates a detailed quantitative report in [`docs/backtest_report.md`](docs/backtest_report.md).
+
+---
+
+## 🧪 Running the Unit Test Suite
+
+The project includes an exhaustive, production-grade test suite covering every engine, calculation, and safety check:
+
+```bash
+# Run all tests
+pytest -v
+
+# Run with line summary and timings
+pytest --tb=line -q
+```
+
+### Test Suite Structure (155 Tests Total)
+```
+tests/
+├── test_author_integrity.py     11 passed  (Cryptographic developer attribution & security)
+├── test_indicators_and_sr.py    31 passed  (Volume Profile, VWAP, VSA, KDE S/R, Fibonacci, Regime)
+├── test_ml_and_confluence.py    28 passed  (ML Feature extraction, Walk-forward validation, MTF)
+├── test_smc_and_patterns.py     27 passed  (FVG, Order Blocks, Liquidity Sweeps, BOS/CHoCH, Patterns)
+└── test_trade_and_backtest.py   58 passed  (Trade Setup Engine, Realistic Backtest, Scoring, Positions)
+─────────────────────────────────────────────────────────────────────────────────────────────────
+TOTAL: 155 passed in ~16 seconds (100% Pass Rate)
+```
+
+---
+
+## 📁 Repository Structure
 
 ```
 Price-Action-agent/
 │
-├── start.bat                  # One-click Windows launcher (UTF-8, VT100 enabled)
-├── main.py                    # Interactive AI Assistant & Live Cockpit
-├── config.py                  # Environment config and logging setup
-├── binance_client.py          # REST historical kline loader & resilient WebSocket streamer
-├── price_action_engine.py     # Master orchestrator combining all sub-engines
-├── data_collector.py          # Multi-symbol, multi-timeframe historical data harvester
-├── train_model.py             # Machine learning pipeline training & calibration script
-├── run_backtest.py            # Quantitative backtest benchmark runner
-├── symbol_mapper.py           # Friendly name resolver & symbol fuzzy matcher
-├── requirements.txt           # Python dependencies
-├── .env.example               # Configuration template
-├── .gitignore                 # Git ignore rules
+├── start.bat                  # One-click Windows launcher (UTF-8 & VT100 auto-config)
+├── main.py                    # Interactive AI Assistant & Spacious Live Cockpit
+├── config.py                  # Global settings, Binance endpoints, and logger
+├── binance_client.py          # Resilient REST kline harvester & multi-timeframe WebSocket
+├── price_action_engine.py     # Master orchestrator integrating all analytical sub-engines
+├── data_collector.py          # Historical data downloader (BTC, ETH, SOL, BNB)
+├── train_model.py             # ML model trainer with purged walk-forward cross-validation
+├── run_backtest.py            # Quantitative event-driven backtest benchmark runner
+├── symbol_mapper.py           # Natural name resolver (e.g. "bitcoin" -> "BTCUSDT")
+├── requirements.txt           # Production dependencies
+├── .env.example               # Environment template
+├── LICENSE                    # MIT License
+├── README.md                  # Comprehensive documentation
 │
-├── core/                      # Canonical dataclass schemas
-│   └── models.py              # TradeSetup, ConfluenceReport, FVG, OrderBlock, etc.
+├── core/                      # Canonical data models & security
+│   ├── models.py              # Dataclasses: TradeSetup, ConfluenceReport, ActivePosition, etc.
+│   └── security.py            # Cryptographic author validation & anti-tamper protection
 │
-├── engines/                   # Specialized analytical engines
-│   ├── smc_engine.py          # Fair Value Gaps, Order Blocks, Liquidity Sweeps, BOS/CHoCH
+├── engines/                   # Specialized modular analytical engines
+│   ├── smc_engine.py          # FVG, Order Blocks, Liquidity Sweeps, BOS, CHoCH
 │   ├── chart_pattern_engine.py# Double Tops/Bottoms, H&S, Triangles, Wedges
-│   ├── indicators_engine.py   # Volume Profile, VWAP, Wyckoff VSA, KDE S/R, Fibonacci
-│   ├── ml_engine.py           # 35-feature extraction, labeling, training & streaming inference
+│   ├── indicators_engine.py   # Volume Profile (POC/VAH/VAL), VWAP bands, VSA, KDE S/R, Fibo
+│   ├── regime_engine.py       # Market Regime Classifier (Trend, Range, Breakout, Chop)
+│   ├── ml_engine.py           # 35-feature extraction, purged walk-forward validation
+│   ├── ml_predictor.py        # Sub-5ms calibrated streaming inference runtime
 │   ├── confluence_engine.py   # Multi-timeframe confluence weighting & scoring
-│   ├── trade_setup_engine.py  # Actionable trade setup generator (R:R >= 1.80)
-│   └── backtest_engine.py     # Event-driven backtester with fee & slippage modeling
+│   ├── trade_setup_engine.py  # Trade setups, 0-100 quality scoring & position state manager
+│   └── backtest_engine.py     # Realistic backtester (dynamic spread, volume impact, latency)
 │
-├── data/historical/           # 60,000 harvested Binance candles (CSV & Parquet)
-├── models/                    # Serialized machine learning bundles (price_action_model.joblib)
-├── docs/                      # Comprehensive technical research specifications
-│   ├── architecture_plan.md   # Architectural blueprint
+├── data/historical/           # 60,000 harvested Binance candles (CSV format)
+├── models/                    # Serialized machine learning bundles (.joblib)
+├── docs/                      # Technical specifications & research blueprints
+│   ├── architecture_plan.md   # Architectural specifications
 │   ├── smc_spec.md            # Smart Money Concepts mathematical specifications
-│   ├── indicators_spec.md     # Volume Profile, VWAP, KDE S/R specifications
-│   ├── ml_pipeline_spec.md    # Machine learning pipeline specifications
-│   └── backtest_report.md     # 30,000-candle quantitative backtest report
+│   ├── indicators_spec.md     # Volume Profile & Statistical Indicator specs
+│   ├── ml_pipeline_spec.md    # Feature engineering & ML specs
+│   └── backtest_report.md     # Multi-symbol quantitative backtesting benchmarks
 │
-└── tests/                     # Clean, consolidated unit test suite (92 tests)
-    ├── test_smc_and_patterns.py
+└── tests/                     # Clean, consolidated unit test suite (155 tests)
+    ├── test_author_integrity.py
     ├── test_indicators_and_sr.py
     ├── test_ml_and_confluence.py
+    ├── test_smc_and_patterns.py
     └── test_trade_and_backtest.py
 ```
 
 ---
 
-## Quick Start (Windows)
+## 🔧 Configuration (`.env`)
 
-Simply double-click:
-```bat
-start.bat
-```
-The launcher will:
-1. Enable UTF-8 encoding and native Windows VT100/ANSI color processing.
-2. Create and activate a clean virtual environment (`venv`).
-3. Install dependencies from `requirements.txt`.
-4. Launch the Interactive AI Price Action Assistant.
+You can create a `.env` file in the root directory by copying `.env.example`:
 
----
+```env
+# Optional: Binance API Credentials (Only needed for private account features;
+# public market data and live WebSocket streaming work 100% without API keys).
+BINANCE_API_KEY=your_api_key_here
+BINANCE_API_SECRET=your_api_secret_here
 
-## Manual Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/Arafat1slam/Price-Action-agent.git
-cd Price-Action-agent
-
-# Create and activate virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/macOS
-.\venv\Scripts\activate    # Windows
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run interactive assistant
-python main.py
-
-# Or launch directly into live streaming mode
-python main.py --stream --symbol BTCUSDT --timeframe 1h
+# Application Configuration
+DEFAULT_SYMBOL=BTCUSDT
+DEFAULT_TIMEFRAME=1h
+LOG_LEVEL=INFO
 ```
 
 ---
 
-## Running Unit Tests
+## 🛡️ Developer Attribution & Anti-Tamper Security
 
-Run the complete test suite:
-```bash
-pytest -v
-```
-All **92 tests** pass in ~3.5 seconds with 100% coverage across pattern detection, indicators, ML inference, and backtesting.
+This software was developed and authored by **Arafat Islam**.
 
----
+To preserve open-source integrity and author credit across distributions, the application includes an active cryptographic tamper-detection system in [`core/security.py`](file:///d:/ALL%20PROJECT/AI/Price%20action/core/security.py). 
 
-## Backtest Benchmarking
-
-To run the event-driven strategy simulator across historical datasets:
-```bash
-python run_backtest.py
-```
-*(See [`docs/backtest_report.md`](docs/backtest_report.md) for full performance metrics across BTC, ETH, and SOL).*
+- The author attribution (`Arafat Islam`) is cryptographically verified against SHA-256 hash assertions at runtime.
+- The engines (`PriceActionEngine`, `TradeSetupEngine`, `PositionStateManager`, and the live terminal) automatically verify author integrity.
+- Any attempt to remove, alter, or strip the developer attribution will trigger an immediate graceful security shutdown.
 
 ---
 
-## License
+## 📜 License & Disclaimer
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+### License
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for details.
+
+### Disclaimer
+*This software is designed for analytical and educational purposes only. Cryptocurrency trading and financial market speculation involve significant financial risk. No analytical tool or machine learning model can guarantee future market behavior. Always manage your risk responsibly and never trade with capital you cannot afford to lose.*
+
+---
+
+<p align="center">
+  <b>Built with ❤️ and dedication by <a href="https://github.com/Arafat1slam">Arafat Islam</a></b>
+</p>
