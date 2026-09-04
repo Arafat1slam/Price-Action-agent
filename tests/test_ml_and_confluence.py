@@ -500,3 +500,204 @@ def test_rich_cockpit_rendering_components():
     assert len(rendered_lines) >= 15, "Cockpit should have detailed content"
 
 
+# ============================================================================
+# Synchronized Multi-Timeframe (5m/15m/1h/4h) Confluence Tests
+# ============================================================================
+
+from datetime import datetime, timezone, timedelta
+from core.models import TimeframeConfluence
+from price_action_engine import PriceActionEngine, AnalysisResult
+
+
+def _generate_mtf_ohlcv(n: int, trend: str = "UP", interval_min: int = 15, base_p: float = 60000.0) -> pd.DataFrame:
+    records = []
+    curr = base_p
+    t0 = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    for i in range(n):
+        drift = 50.0 if trend == "UP" else (-50.0 if trend == "DOWN" else 0.0)
+        noise = np.random.normal(0, 15.0)
+        o = curr
+        c = o + drift + noise
+        h = max(o, c) + abs(np.random.normal(20, 5))
+        l = min(o, c) - abs(np.random.normal(20, 5))
+        v = float(np.random.uniform(100, 500))
+        t = t0 + timedelta(minutes=i * interval_min)
+        records.append({
+            "timestamp": t,
+            "open": round(o, 2),
+            "high": round(h, 2),
+            "low": round(l, 2),
+            "close": round(c, 2),
+            "volume": round(v, 2),
+            "is_closed": True,
+        })
+        curr = c
+    return pd.DataFrame(records)
+
+
+def test_confluence_engine_mtf_all_four_timeframes():
+    engine = ConfluenceEngine()
+    df_5m = _generate_mtf_ohlcv(60, trend="UP", interval_min=5, base_p=60000.0)
+    df_15m = _generate_mtf_ohlcv(60, trend="UP", interval_min=15, base_p=60000.0)
+    df_1h = _generate_mtf_ohlcv(60, trend="UP", interval_min=60, base_p=60000.0)
+    df_4h = _generate_mtf_ohlcv(60, trend="UP", interval_min=240, base_p=60000.0)
+
+    mtf_data = {"5m": df_5m, "15m": df_15m, "1h": df_1h, "4h": df_4h}
+    report = engine.analyze(
+        symbol="BTCUSDT",
+        data=mtf_data,
+        current_price=float(df_1h["close"].iloc[-1]),
+        primary_timeframe="1h",
+    )
+
+    assert isinstance(report, ConfluenceReport)
+    assert report.confidence_score >= 50
+    for tf in ["5m", "15m", "1h", "4h"]:
+        assert tf in report.timeframe_breakdown
+        tf_conf = report.timeframe_breakdown[tf]
+        assert isinstance(tf_conf, TimeframeConfluence)
+        assert tf_conf.timeframe == tf
+        assert isinstance(tf_conf.bias, BiasType)
+        assert -1.0 <= tf_conf.score <= 1.0
+
+
+def test_price_action_engine_set_multi_history_and_analyze():
+    pa_engine = PriceActionEngine(max_candles=80)
+    df_5m = _generate_mtf_ohlcv(50, trend="UP", interval_min=5, base_p=3000.0)
+    df_15m = _generate_mtf_ohlcv(50, trend="UP", interval_min=15, base_p=3000.0)
+    df_1h = _generate_mtf_ohlcv(50, trend="UP", interval_min=60, base_p=3000.0)
+    df_4h = _generate_mtf_ohlcv(50, trend="UP", interval_min=240, base_p=3000.0)
+
+    mtf_dfs = {"5m": df_5m, "15m": df_15m, "1h": df_1h, "4h": df_4h}
+    pa_engine.set_multi_history(mtf_dfs, primary_tf="1h")
+
+    assert "5m" in pa_engine.mtf_buffers
+    assert "15m" in pa_engine.mtf_buffers
+    assert "1h" in pa_engine.mtf_buffers
+    assert "4h" in pa_engine.mtf_buffers
+    assert len(pa_engine.df) == 50
+
+    res = pa_engine.analyze(symbol="ETHUSDT", timeframe="1h")
+    assert res is not None
+    assert isinstance(res, AnalysisResult)
+    assert res.confluence_report is not None
+    assert "5m" in res.confluence_report.timeframe_breakdown
+    assert "15m" in res.confluence_report.timeframe_breakdown
+    assert "1h" in res.confluence_report.timeframe_breakdown
+    assert "4h" in res.confluence_report.timeframe_breakdown
+
+
+def test_multi_candle_update_routing():
+    pa_engine = PriceActionEngine(max_candles=50)
+    df_1h = _generate_mtf_ohlcv(30, trend="UP", interval_min=60, base_p=100.0)
+    df_5m = _generate_mtf_ohlcv(30, trend="UP", interval_min=5, base_p=100.0)
+
+    pa_engine.set_multi_history({"1h": df_1h, "5m": df_5m}, primary_tf="1h")
+
+    new_5m = {
+        "timestamp": datetime.now(timezone.utc),
+        "open": 105.0,
+        "high": 106.0,
+        "low": 104.5,
+        "close": 105.8,
+        "volume": 250.0,
+        "is_closed": False,
+        "interval": "5m",
+        "symbol": "SOLUSDT",
+    }
+    pa_engine.update_candle(new_5m)
+    assert len(pa_engine.mtf_buffers["5m"]) == 31
+    assert pa_engine.mtf_buffers["5m"].iloc[-1]["close"] == 105.8
+
+
+# ============================================================================
+# Purged Walk-Forward ML Validation Tests
+# ============================================================================
+
+from engines.ml_engine import (
+    PurgedWalkForwardValidator,
+    WalkForwardFoldResult,
+    WalkForwardValidationReport,
+)
+
+
+def _make_synthetic_ml_dataset():
+    np.random.seed(42)
+    n_samples = 600
+    n_features = 35
+    X = np.random.randn(n_samples, n_features)
+    latent_signal = 0.5 * X[:, 0] - 0.3 * X[:, 1] + np.random.randn(n_samples) * 0.2
+    y = np.ones(n_samples, dtype=int)
+    y[latent_signal > 0.3] = 2
+    y[latent_signal < -0.3] = 0
+    returns = np.random.normal(0.0002, 0.01, size=n_samples)
+    prices = 100.0 * np.cumprod(1.0 + returns)
+    return X, y, prices
+
+
+def test_walk_forward_validator_basic():
+    X, y, prices = _make_synthetic_ml_dataset()
+    validator = PurgedWalkForwardValidator(
+        n_splits=3,
+        purge_window=5,
+        min_train_size=100,
+        expanding=True,
+        random_state=42,
+    )
+    report = validator.validate(X, y, raw_prices=prices)
+    assert isinstance(report, WalkForwardValidationReport)
+    assert report.n_folds == 3
+    assert len(report.folds) == 3
+    assert report.avg_accuracy > 0.0
+    assert 0.0 <= report.avg_directional_win_rate <= 100.0
+    assert report.overall_max_dd_pct >= 0.0
+    assert isinstance(report.avg_sharpe, float)
+
+
+def test_walk_forward_fold_metrics_integrity():
+    X, y, prices = _make_synthetic_ml_dataset()
+    validator = PurgedWalkForwardValidator(
+        n_splits=3,
+        purge_window=5,
+        min_train_size=100,
+        expanding=True,
+    )
+    report = validator.validate(X, y, raw_prices=prices)
+    for fold in report.folds:
+        assert isinstance(fold, WalkForwardFoldResult)
+        assert fold.train_size >= 100
+        assert fold.test_size > 0
+        assert 0.0 <= fold.accuracy <= 1.0
+        assert 0.0 <= fold.f1_macro <= 1.0
+        assert 0.0 <= fold.bullish_precision <= 1.0
+        assert 0.0 <= fold.bullish_recall <= 1.0
+        assert 0.0 <= fold.bearish_precision <= 1.0
+        assert 0.0 <= fold.bearish_recall <= 1.0
+        assert 0.0 <= fold.directional_win_rate <= 100.0
+        assert fold.simulated_max_dd_pct >= 0.0
+
+
+def test_walk_forward_no_leakage_and_embargo():
+    X, y, _ = _make_synthetic_ml_dataset()
+    validator = PurgedWalkForwardValidator(
+        n_splits=4,
+        purge_window=10,
+        min_train_size=80,
+    )
+    report = validator.validate(X, y)
+    train_sizes = [f.train_size for f in report.folds]
+    assert sorted(train_sizes) == train_sizes
+    assert len(train_sizes) == 4
+
+
+def test_walk_forward_empty_or_small_data():
+    X = np.random.randn(30, 35)
+    y = np.ones(30, dtype=int)
+    validator = PurgedWalkForwardValidator(n_splits=5, min_train_size=100)
+    report = validator.validate(X, y)
+    assert report.n_folds == 0
+    assert len(report.folds) == 0
+    assert report.avg_accuracy == 0.0
+
+
+

@@ -34,7 +34,28 @@ from engines.backtest_engine import (
     TradeSide,
     OrderType,
     ExitReason,
+    compute_dynamic_spread,
+    compute_dynamic_slippage,
 )
+from core.models import (
+    BiasType,
+    SetupType,
+    TradeSetup,
+    TradeQualityScore,
+    QualityGrade,
+    ConfluenceReport,
+    TimeframeConfluence,
+    MarketStructureState,
+    FairValueGap,
+    OrderBlock,
+    VolumeProfileZone,
+    MLInferenceResult,
+    RegimeReport,
+    MarketRegime,
+    PositionState,
+    ActivePosition,
+)
+from engines.trade_setup_engine import TradeSetupEngine, PositionStateManager
 
 
 # ============================================================================
@@ -711,4 +732,594 @@ def test_data_collector_clean_and_validate(tmp_path):
     assert report["valid"] is True
     assert report["candle_count"] == 10
     assert len(df) == 10
+
+
+# ============================================================================
+# 15. Realistic Institutional Backtesting Tests
+# ============================================================================
+
+def test_dynamic_spread_calculation():
+    """Verifies that spread widens when ATR/Price volatility expands."""
+    base_spread = 0.0001  # 1 bps
+    price = 50000.0
+
+    # Low volatility (0.2% ATR/Price)
+    spread_low = compute_dynamic_spread(base_spread, price, atr_val=100.0, enabled=True)
+    assert spread_low == base_spread
+
+    # Normal volatility (0.5% ATR/Price)
+    spread_norm = compute_dynamic_spread(base_spread, price, atr_val=250.0, enabled=True)
+    assert spread_norm >= base_spread
+
+    # High volatility surge (2.0% ATR/Price)
+    spread_high = compute_dynamic_spread(base_spread, price, atr_val=1000.0, enabled=True)
+    assert spread_high > spread_norm
+    assert spread_high <= 0.0025
+
+    # Disabled flag returns base spread
+    assert compute_dynamic_spread(base_spread, price, atr_val=1000.0, enabled=False) == base_spread
+
+
+def test_dynamic_slippage_and_latency():
+    """Verifies volume participation impact and latency penalty."""
+    base_slip = 0.0002
+    price = 100.0
+    bar_vol = 50000.0
+    atr_val = 2.0
+
+    # Small retail order (negligible participation)
+    slip_small, impact_small, latency_drift = compute_dynamic_slippage(
+        base_slippage=base_slip,
+        price=price,
+        order_size=10.0,
+        bar_volume=bar_vol,
+        atr_val=atr_val,
+        latency_ms=85.0,
+        volume_impact_enabled=True,
+    )
+    assert slip_small >= base_slip
+
+    # Large institutional order (heavy participation)
+    slip_large, impact_large, _ = compute_dynamic_slippage(
+        base_slippage=base_slip,
+        price=price,
+        order_size=5000.0,
+        bar_volume=bar_vol,
+        atr_val=atr_val,
+        latency_ms=85.0,
+        volume_impact_enabled=True,
+    )
+    assert impact_large > impact_small
+    assert slip_large > slip_small
+
+    # Latency ms variation
+    _, _, drift_low = compute_dynamic_slippage(base_slip, price, 10.0, bar_vol, atr_val, latency_ms=10.0)
+    _, _, drift_high = compute_dynamic_slippage(base_slip, price, 10.0, bar_vol, atr_val, latency_ms=250.0)
+    assert drift_high > drift_low
+
+
+def test_intracandle_path_bullish_candle_sl_first():
+    """
+    On a Green/Bullish candle (O -> L -> H -> C):
+    If price dips to L <= SL first, LONG trade stops out before H (TP) is ever reached.
+    """
+    cfg = BacktestConfig(intracandle_mode="path", slippage=0.0, spread=0.0)
+    engine = BacktestEngine(config=cfg)
+
+    pos = Position(
+        trade_id=1,
+        symbol="BTCUSDT",
+        side=TradeSide.LONG,
+        entry_index=1,
+        entry_time=datetime(2026, 1, 1),
+        entry_price=100.0,
+        initial_sl=95.0,
+        current_sl=95.0,
+        tp1_price=110.0,
+        tp2_price=115.0,
+        initial_size=10.0,
+        remaining_size=10.0,
+        risk_amount=50.0,
+        setup_type="TEST",
+    )
+
+    rec = engine._process_active_position(
+        pos=pos,
+        t=2,
+        open_price=98.0,
+        high_price=112.0,
+        low_price=94.0,
+        close_price=111.0,
+        timestamp=datetime(2026, 1, 1, 1),
+        cfg=cfg,
+        equity_before=10000.0,
+    )
+
+    assert rec is not None
+    assert rec.exit_reason == ExitReason.STOP_LOSS.value
+    assert rec.tp1_hit is False
+    assert rec.net_pnl < 0
+
+
+def test_intracandle_path_bearish_candle_tp_first_for_long():
+    """
+    On a Red/Bearish candle (O -> H -> L -> C):
+    For LONG: Price first rallies to H >= TP1, locks in partial scale-out, moves SL to BE,
+    before dropping to L.
+    """
+    cfg = BacktestConfig(intracandle_mode="path", move_be_at_tp1=True, slippage=0.0, spread=0.0)
+    engine = BacktestEngine(config=cfg)
+
+    pos = Position(
+        trade_id=2,
+        symbol="BTCUSDT",
+        side=TradeSide.LONG,
+        entry_index=1,
+        entry_time=datetime(2026, 1, 1),
+        entry_price=100.0,
+        initial_sl=95.0,
+        current_sl=95.0,
+        tp1_price=110.0,
+        tp2_price=120.0,
+        initial_size=10.0,
+        remaining_size=10.0,
+        risk_amount=50.0,
+        setup_type="TEST",
+    )
+
+    rec = engine._process_active_position(
+        pos=pos,
+        t=2,
+        open_price=105.0,
+        high_price=112.0,
+        low_price=94.0,
+        close_price=96.0,
+        timestamp=datetime(2026, 1, 1, 1),
+        cfg=cfg,
+        equity_before=10000.0,
+    )
+
+    assert rec is not None
+    assert rec.tp1_hit is True
+    assert rec.exit_reason == ExitReason.BREAKEVEN.value
+    assert rec.net_pnl > 0
+
+
+def test_intracandle_path_short_execution():
+    """
+    On a Red/Bearish candle (O -> H -> L -> C):
+    For SHORT: If price spikes up to H >= SL first, it stops out before dropping to L (TP).
+    """
+    cfg = BacktestConfig(intracandle_mode="path", slippage=0.0, spread=0.0)
+    engine = BacktestEngine(config=cfg)
+
+    pos = Position(
+        trade_id=3,
+        symbol="BTCUSDT",
+        side=TradeSide.SHORT,
+        entry_index=1,
+        entry_time=datetime(2026, 1, 1),
+        entry_price=100.0,
+        initial_sl=105.0,
+        current_sl=105.0,
+        tp1_price=90.0,
+        tp2_price=80.0,
+        initial_size=10.0,
+        remaining_size=10.0,
+        risk_amount=50.0,
+        setup_type="TEST",
+    )
+
+    rec = engine._process_active_position(
+        pos=pos,
+        t=2,
+        open_price=102.0,
+        high_price=106.0,
+        low_price=88.0,
+        close_price=89.0,
+        timestamp=datetime(2026, 1, 1, 1),
+        cfg=cfg,
+        equity_before=10000.0,
+    )
+
+    assert rec is not None
+    assert rec.exit_reason == ExitReason.STOP_LOSS.value
+    assert rec.tp1_hit is False
+    assert rec.net_pnl < 0
+
+
+# ============================================================================
+# 16. Trade Quality Scoring Tests (0-100 Unified Grade)
+# ============================================================================
+
+@pytest.fixture
+def tq_engine():
+    return TradeSetupEngine()
+
+
+@pytest.fixture
+def basic_long_setup():
+    return TradeSetup(
+        setup_id="TEST-001",
+        symbol="BTCUSDT",
+        timestamp="2024-01-01T00:00:00",
+        setup_type=SetupType.SMC_PULLBACK_FVG,
+        direction="LONG",
+        entry_price=80000.0,
+        stop_loss=79000.0,
+        tp1_price=81500.0,
+        tp2_price=83000.0,
+        risk_reward_tp1=1.50,
+        risk_reward_tp2=3.00,
+        effective_rr=2.25,
+        confidence_score=75,
+    )
+
+
+@pytest.fixture
+def basic_short_setup():
+    return TradeSetup(
+        setup_id="TEST-002",
+        symbol="BTCUSDT",
+        timestamp="2024-01-01T00:00:00",
+        setup_type=SetupType.SMC_ORDER_BLOCK,
+        direction="SHORT",
+        entry_price=80000.0,
+        stop_loss=81000.0,
+        tp1_price=78500.0,
+        tp2_price=77000.0,
+        risk_reward_tp1=1.50,
+        risk_reward_tp2=3.00,
+        effective_rr=2.25,
+        confidence_score=75,
+    )
+
+
+def _make_confluence_tq(
+    bias=BiasType.BULLISH,
+    confidence=75,
+    with_fvgs=False,
+    with_obs=False,
+    with_vp=False,
+    with_mtf=False,
+    with_smc_state=False,
+):
+    fvgs = []
+    if with_fvgs:
+        fvgs = [FairValueGap(
+            top=80500, bottom=79500, midpoint=80000,
+            bias=BiasType.BULLISH, created_time="t1",
+        )]
+    obs = []
+    if with_obs:
+        obs = [OrderBlock(
+            top=80200, bottom=79800, bias=BiasType.BULLISH,
+            created_time="t1", volume=1000.0,
+        )]
+    vp = None
+    if with_vp:
+        vp = VolumeProfileZone(
+            poc_price=80000, vah_price=81000, val_price=79000, total_volume=50000
+        )
+    tf_breakdown = {}
+    if with_mtf:
+        for tf in ["4h", "1h", "15m", "5m"]:
+            tf_breakdown[tf] = TimeframeConfluence(
+                timeframe=tf, bias=bias, score=0.5
+            )
+    smc_state = None
+    if with_smc_state:
+        smc_state = MarketStructureState(
+            trend="UPTREND",
+            recent_bos="BULLISH_BOS",
+            recent_choch=None,
+            last_swing_high=81000,
+            last_swing_low=79000,
+        )
+
+    return ConfluenceReport(
+        symbol="BTCUSDT",
+        timestamp="2024-01-01",
+        current_price=80000,
+        overall_bias=bias,
+        confidence_score=confidence,
+        htf_bias=bias,
+        ltf_trigger=bias,
+        timeframe_breakdown=tf_breakdown,
+        smc_state=smc_state,
+        active_fvgs=fvgs,
+        active_obs=obs,
+        volume_profile=vp,
+    )
+
+
+class TestTradeQualityScoring:
+    """Tests for the unified 0-100 trade quality scoring system."""
+
+    def test_score_returns_quality_score_object(self, tq_engine, basic_long_setup):
+        qs = tq_engine.score_trade_quality(basic_long_setup)
+        assert isinstance(qs, TradeQualityScore)
+        assert 0 <= qs.raw_score <= 100
+        assert isinstance(qs.grade, QualityGrade)
+
+    def test_score_attached_to_setup(self, tq_engine, basic_long_setup):
+        qs = tq_engine.score_trade_quality(basic_long_setup)
+        assert basic_long_setup.quality_score is qs
+
+    def test_grade_mapping_a_plus(self, tq_engine):
+        assert tq_engine._map_grade(90) == QualityGrade.A_PLUS
+        assert tq_engine._map_grade(85) == QualityGrade.A_PLUS
+
+    def test_grade_mapping_a(self, tq_engine):
+        assert tq_engine._map_grade(80) == QualityGrade.A
+        assert tq_engine._map_grade(75) == QualityGrade.A
+
+    def test_grade_mapping_b(self, tq_engine):
+        assert tq_engine._map_grade(70) == QualityGrade.B
+        assert tq_engine._map_grade(65) == QualityGrade.B
+
+    def test_grade_mapping_c(self, tq_engine):
+        assert tq_engine._map_grade(55) == QualityGrade.C
+        assert tq_engine._map_grade(45) == QualityGrade.C
+
+    def test_grade_mapping_filtered(self, tq_engine):
+        assert tq_engine._map_grade(44) == QualityGrade.FILTERED
+        assert tq_engine._map_grade(0) == QualityGrade.FILTERED
+
+    def test_smc_fvg_setup_scores_higher_smc(self, tq_engine, basic_long_setup):
+        va_setup = TradeSetup(
+            setup_id="TEST-VA",
+            symbol="BTCUSDT",
+            timestamp="2024-01-01",
+            setup_type=SetupType.VALUE_AREA_MEAN_REVERSION,
+            direction="LONG",
+            entry_price=80000.0,
+            stop_loss=79000.0,
+            tp1_price=81500.0,
+            tp2_price=83000.0,
+            risk_reward_tp1=1.50,
+            risk_reward_tp2=3.00,
+            effective_rr=2.25,
+            confidence_score=75,
+        )
+        smc_score_fvg = tq_engine._score_smc_component(basic_long_setup, None)
+        smc_score_va = tq_engine._score_smc_component(va_setup, None)
+        assert smc_score_fvg > smc_score_va
+
+    def test_high_confluence_scores_high(self, tq_engine, basic_long_setup):
+        rep = _make_confluence_tq(
+            bias=BiasType.BULLISH,
+            confidence=85,
+            with_fvgs=True,
+            with_obs=True,
+            with_vp=True,
+            with_mtf=True,
+            with_smc_state=True,
+        )
+        regime = RegimeReport(
+            regime=MarketRegime.TRENDING_BULL,
+            regime_label="Trending Bull",
+            confidence=80,
+            adx=35.0,
+            plus_di=30.0,
+            minus_di=15.0,
+            atr_ratio=1.2,
+            bb_bandwidth_pct=5.0,
+            volatility_state="NORMAL",
+            recommended_strategy="Trend Following",
+        )
+        ml = MLInferenceResult(
+            prob_bullish=0.75,
+            prob_bearish=0.15,
+            prob_neutral=0.10,
+            model_confidence=0.30,
+        )
+        qs = tq_engine.score_trade_quality(basic_long_setup, rep, regime, ml)
+        assert qs.raw_score >= 65, f"High confluence setup should score >= 65 but got {qs.raw_score}"
+        assert qs.grade in (QualityGrade.A_PLUS, QualityGrade.A, QualityGrade.B)
+
+    def test_no_confluence_gets_baseline_score(self, tq_engine, basic_long_setup):
+        qs = tq_engine.score_trade_quality(basic_long_setup)
+        assert qs.raw_score > 0, "Even without confluence data, should get baseline score"
+
+    def test_component_breakdown_sums_correctly(self, tq_engine, basic_long_setup):
+        rep = _make_confluence_tq(bias=BiasType.BULLISH, confidence=70)
+        qs = tq_engine.score_trade_quality(basic_long_setup, rep)
+        breakdown_sum = sum(qs.component_breakdown.values())
+        assert abs(breakdown_sum - qs.raw_score) < 1.0, (
+            f"Component sum {breakdown_sum} should match raw score {qs.raw_score}"
+        )
+
+    def test_short_with_bear_regime_scores_well(self, tq_engine, basic_short_setup):
+        regime = RegimeReport(
+            regime=MarketRegime.TRENDING_BEAR,
+            regime_label="Trending Bear",
+            confidence=80,
+            adx=32.0,
+            plus_di=12.0,
+            minus_di=28.0,
+            atr_ratio=1.1,
+            bb_bandwidth_pct=4.5,
+            volatility_state="NORMAL",
+            recommended_strategy="Trend Following Short",
+        )
+        structure_score = tq_engine._score_structure_component(basic_short_setup, regime)
+        assert structure_score >= 70, f"Short in trending bear should score well: {structure_score}"
+
+    def test_ml_component_high_prob(self, tq_engine, basic_long_setup):
+        ml = MLInferenceResult(
+            prob_bullish=0.80, prob_bearish=0.10, prob_neutral=0.10, model_confidence=0.30
+        )
+        ml_score = tq_engine._score_ml_component(basic_long_setup, ml)
+        assert ml_score >= 80, f"High ML probability should score >= 80: {ml_score}"
+
+    def test_ml_component_no_ml_returns_neutral(self, tq_engine, basic_long_setup):
+        ml_score = tq_engine._score_ml_component(basic_long_setup, None)
+        assert ml_score == 50.0
+
+    def test_mtf_all_aligned_scores_high(self, tq_engine):
+        rep = _make_confluence_tq(bias=BiasType.BULLISH, with_mtf=True)
+        mtf_score = tq_engine._score_mtf_component(rep)
+        assert mtf_score >= 80, f"All timeframes aligned should score high: {mtf_score}"
+
+
+# ============================================================================
+# 17. Position-State Awareness & Whipsaw Prevention Tests
+# ============================================================================
+
+@pytest.fixture
+def pos_manager():
+    return PositionStateManager()
+
+
+@pytest.fixture
+def pos_long_setup():
+    return TradeSetup(
+        setup_id="SETUP-LONG001",
+        symbol="BTCUSDT",
+        timestamp="2024-01-01T00:00:00",
+        setup_type=SetupType.SMC_PULLBACK_FVG,
+        direction="LONG",
+        entry_price=80000.0,
+        stop_loss=79000.0,
+        tp1_price=81500.0,
+        tp2_price=83000.0,
+        risk_reward_tp1=1.50,
+        risk_reward_tp2=3.00,
+        effective_rr=2.25,
+        confidence_score=75,
+    )
+
+
+@pytest.fixture
+def pos_short_setup():
+    return TradeSetup(
+        setup_id="SETUP-SHORT001",
+        symbol="BTCUSDT",
+        timestamp="2024-01-01T00:00:00",
+        setup_type=SetupType.SMC_ORDER_BLOCK,
+        direction="SHORT",
+        entry_price=80000.0,
+        stop_loss=81000.0,
+        tp1_price=78500.0,
+        tp2_price=77000.0,
+        risk_reward_tp1=1.50,
+        risk_reward_tp2=3.00,
+        effective_rr=2.25,
+        confidence_score=75,
+    )
+
+
+class TestPositionStateManager:
+    """Tests for the position-state manager (whipsaw prevention & reversal warnings)."""
+
+    def test_initial_state_is_flat(self, pos_manager):
+        assert pos_manager.is_flat is True
+        assert pos_manager.has_open_trade is False
+        assert pos_manager.active_position is None
+
+    def test_open_long_position(self, pos_manager, pos_long_setup):
+        pos = pos_manager.open_position(pos_long_setup, current_price=80000.0)
+        assert isinstance(pos, ActivePosition)
+        assert pos.direction == "LONG"
+        assert pos.state == PositionState.OPEN_LONG
+        assert pos_manager.has_open_trade is True
+        assert pos_manager.is_flat is False
+
+    def test_open_short_position(self, pos_manager, pos_short_setup):
+        pos = pos_manager.open_position(pos_short_setup, current_price=80000.0)
+        assert pos.direction == "SHORT"
+        assert pos.state == PositionState.OPEN_SHORT
+
+    def test_close_position(self, pos_manager, pos_long_setup):
+        pos_manager.open_position(pos_long_setup, current_price=80000.0)
+        closed = pos_manager.close_position("Manual close")
+        assert closed is not None
+        assert closed.state == PositionState.FLAT
+        assert pos_manager.is_flat is True
+        assert pos_manager.active_position is None
+
+    def test_close_when_flat_returns_none(self, pos_manager):
+        assert pos_manager.close_position() is None
+
+    def test_update_position_calculates_pnl(self, pos_manager, pos_long_setup):
+        pos_manager.open_position(pos_long_setup, current_price=80000.0)
+        pos = pos_manager.update_position(current_price=80500.0)
+        assert pos is not None
+        assert pos.current_pnl_pct > 0
+        assert pos.current_rr > 0
+
+    def test_update_position_tracks_peak_rr(self, pos_manager, pos_long_setup):
+        pos_manager.open_position(pos_long_setup, current_price=80000.0)
+        pos_manager.update_position(current_price=81000.0)
+        peak1 = pos_manager.active_position.peak_rr
+        pos_manager.update_position(current_price=80500.0)
+        assert pos_manager.active_position.peak_rr == peak1, "Peak should not decrease"
+
+    def test_tp1_hit_sets_partial_state(self, pos_manager, pos_long_setup):
+        pos_manager.open_position(pos_long_setup, current_price=80000.0)
+        pos = pos_manager.update_position(current_price=81600.0)
+        assert pos.state == PositionState.PARTIAL_TP1
+
+    def test_sl_hit_closes_position(self, pos_manager, pos_long_setup):
+        pos_manager.open_position(pos_long_setup, current_price=80000.0)
+        result = pos_manager.update_position(current_price=78900.0)
+        assert pos_manager.is_flat is True
+
+    def test_tp2_hit_closes_position(self, pos_manager, pos_long_setup):
+        pos_manager.open_position(pos_long_setup, current_price=80000.0)
+        result = pos_manager.update_position(current_price=83100.0)
+        assert pos_manager.is_flat is True
+
+    def test_whipsaw_prevention_suppresses_opposite(self, pos_manager, pos_long_setup):
+        pos_manager.open_position(pos_long_setup, current_price=80000.0)
+        assert pos_manager.should_suppress_signal("SHORT") is True
+        assert pos_manager.should_suppress_signal("LONG") is False
+
+    def test_whipsaw_no_suppression_when_flat(self, pos_manager):
+        assert pos_manager.should_suppress_signal("LONG") is False
+        assert pos_manager.should_suppress_signal("SHORT") is False
+
+    def test_early_reversal_warning_long(self, pos_manager, pos_long_setup):
+        pos_manager.open_position(pos_long_setup, current_price=80000.0)
+        pos_manager.update_position(current_price=81200.0)
+        candle = {
+            "open": 81200.0,
+            "high": 81500.0,
+            "low": 80700.0,
+            "close": 80800.0,
+        }
+        pos = pos_manager.update_position(current_price=80800.0, candle=candle)
+        assert pos is not None
+
+    def test_early_reversal_warning_triggers_on_significant_drawdown(self, pos_manager, pos_long_setup):
+        pos_manager.open_position(pos_long_setup, current_price=80000.0)
+        pos_manager.update_position(current_price=82000.0)
+        candle = {
+            "open": 81600.0,
+            "high": 81800.0,
+            "low": 81300.0,
+            "close": 81400.0,
+        }
+        pos = pos_manager.update_position(current_price=81400.0, candle=candle)
+        assert pos is not None
+        assert pos.reversal_warning is True
+        assert len(pos.reversal_reason) > 0
+
+    def test_short_position_pnl_calculation(self, pos_manager, pos_short_setup):
+        pos_manager.open_position(pos_short_setup, current_price=80000.0)
+        pos = pos_manager.update_position(current_price=79000.0)
+        assert pos.current_rr == 1.0
+        assert pos.current_pnl_pct > 0
+
+    def test_trade_history_records_closed_trades(self, pos_manager, pos_long_setup):
+        pos_manager.open_position(pos_long_setup, current_price=80000.0)
+        pos_manager.close_position("Test close")
+        history = pos_manager.get_trade_history()
+        assert len(history) == 1
+        assert history[0].position_id == "SETUP-LONG001"
+
+    def test_update_when_flat_returns_none(self, pos_manager):
+        result = pos_manager.update_position(current_price=80000.0)
+        assert result is None
 
