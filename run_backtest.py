@@ -72,6 +72,29 @@ def parse_arguments() -> argparse.Namespace:
         help="Fractional risk per trade (e.g. 0.015 = 1.5%)",
     )
     parser.add_argument(
+        "--latency",
+        type=float,
+        default=85.0,
+        help="Simulated order routing latency in milliseconds (e.g. 85ms)",
+    )
+    parser.add_argument(
+        "--intracandle-mode",
+        type=str,
+        default="path",
+        choices=["path", "pessimistic"],
+        help="Intracandle execution mode (path: O->L->H->C / O->H->L->C)",
+    )
+    parser.add_argument(
+        "--no-dynamic-spread",
+        action="store_true",
+        help="Disable volatility-adjusted dynamic spread expansion",
+    )
+    parser.add_argument(
+        "--no-volume-slippage",
+        action="store_true",
+        help="Disable non-linear volume participation market impact",
+    )
+    parser.add_argument(
         "--report-file",
         type=str,
         default=str(DOCS_DIR / "backtest_report.md"),
@@ -248,6 +271,10 @@ def main() -> None:
     config = BacktestConfig(
         initial_capital=args.capital,
         risk_per_trade=args.risk,
+        latency_ms=args.latency,
+        intracandle_mode=args.intracandle_mode,
+        dynamic_spread=not args.no_dynamic_spread,
+        volume_slippage=not args.no_volume_slippage,
     )
     engine = BacktestEngine(config=config)
     strategy = SMCPriceActionStrategy()

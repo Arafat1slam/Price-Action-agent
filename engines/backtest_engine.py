@@ -81,13 +81,68 @@ class BacktestConfig:
     tp2_rr: float = 3.0                 # TP2 runner at 1:3.0 R:R
     tp1_ratio: float = 0.50             # 50% scale-out at TP1
     move_be_at_tp1: bool = True         # Advance stop loss to breakeven after TP1 hit
-    pessimistic_intracandle: bool = True# SL executed first if both SL and TP in same candle
+    pessimistic_intracandle: bool = True# SL executed first if both SL and TP in same candle (legacy fallback)
     max_active_trades: int = 1          # Single concurrent position per symbol
     max_holding_bars: int = 80          # Maximum bars before timeout exit
     min_risk_atr: float = 0.35          # Minimum stop distance in ATR multiples
     max_risk_atr: float = 3.5           # Maximum stop distance in ATR multiples
     atr_buffer_sl: float = 0.20         # 0.20 ATR buffer beyond structural invalidation level
     max_leverage: float = 5.0           # Maximum allowed notional leverage cap
+    dynamic_spread: bool = True         # Volatility-dependent dynamic spread expansion
+    volume_slippage: bool = True        # Non-linear volume participation market impact
+    latency_ms: float = 85.0            # Simulated order execution latency (e.g. 85ms)
+    intracandle_mode: str = "path"      # "path" (O->L->H->C / O->H->L->C) or "pessimistic"
+
+
+def compute_dynamic_spread(
+    base_spread: float,
+    price: float,
+    atr_val: float,
+    enabled: bool = True,
+) -> float:
+    """
+    Computes volatility-adjusted dynamic spread.
+    In volatile market conditions (high ATR/Price ratio), bid-ask spread expands.
+    """
+    if not enabled or atr_val <= 0 or price <= 0:
+        return base_spread
+    vol_ratio = atr_val / price
+    mult = 1.0 + max(0.0, (vol_ratio - 0.005) * 40.0)
+    return float(np.clip(base_spread * mult, base_spread, 0.0025))
+
+
+def compute_dynamic_slippage(
+    base_slippage: float,
+    price: float,
+    order_size: float,
+    bar_volume: float,
+    atr_val: float,
+    latency_ms: float = 85.0,
+    volume_impact_enabled: bool = True,
+) -> Tuple[float, float, float]:
+    """
+    Computes institutional realistic execution slippage:
+    1. Base exchange execution slippage
+    2. Square-root market impact based on order size vs bar volume
+    3. Latency drift penalty during execution order routing
+    Returns: (total_slippage, impact_slippage, latency_drift_slippage)
+    """
+    impact_slip = base_slippage
+    if volume_impact_enabled and bar_volume > 0 and price > 0:
+        order_notional = order_size * price
+        bar_notional = max(5000.0, bar_volume * price)
+        participation = order_notional / bar_notional
+        if participation > 0.005:
+            impact_factor = 1.0 + min(4.0, 2.5 * float(np.sqrt(participation)))
+            impact_slip = base_slippage * impact_factor
+
+    latency_drift = 0.0
+    if latency_ms > 0 and price > 0 and atr_val > 0:
+        drift_fraction = min(0.15, latency_ms / 60000.0)
+        latency_drift = (drift_fraction * (atr_val / price)) * 0.20
+
+    total_slip = float(np.clip(impact_slip + latency_drift, base_slippage, 0.005))
+    return total_slip, impact_slip, latency_drift
 
 
 # ============================================================================
@@ -136,6 +191,7 @@ class Position:
     tp1_fee: float = 0.0
     runner_fee: float = 0.0
     slippage_paid: float = 0.0
+    latency_delay_cost: float = 0.0
 
 
 @dataclass
@@ -168,6 +224,7 @@ class TradeRecord:
     duration_bars: int
     equity_before: float
     equity_after: float
+    latency_paid: float = 0.0
 
 
 @dataclass
@@ -447,6 +504,8 @@ class BacktestEngine:
         low = precomputed["low"]
         close = precomputed["close"]
         open_p = precomputed["open"]
+        vol = precomputed["volume"]
+        atr = precomputed["atr"]
         ts = precomputed["timestamps"]
 
         # Track bar-by-bar equity curve
@@ -468,6 +527,8 @@ class BacktestEngine:
                     timestamp=ts[t],
                     cfg=cfg,
                     equity_before=equity,
+                    bar_volume=vol[t],
+                    atr_val=atr[t],
                 )
                 if closed_record is not None:
                     equity += closed_record.net_pnl
@@ -488,6 +549,8 @@ class BacktestEngine:
                     current_equity=equity,
                     cfg=cfg,
                     trade_id=trade_id_counter,
+                    bar_volume=vol[t],
+                    atr_val=atr[t],
                 )
                 if new_pos is not None:
                     active_position = new_pos
@@ -580,22 +643,43 @@ class BacktestEngine:
         current_equity: float,
         cfg: BacktestConfig,
         trade_id: int,
+        bar_volume: float = 1000.0,
+        atr_val: float = 0.0,
     ) -> Optional[Position]:
         """
         Executes a queued trade signal strictly at the open of candle t.
-        Applies slippage, spread buffer, taker fee, and dynamic position sizing.
+        Applies dynamic spread, volume-weighted slippage, latency penalty,
+        taker fee, and dynamic position sizing.
         """
         if current_equity <= 0:
             return None
 
+        # 1. Volatility-adjusted dynamic spread
+        eff_spread = compute_dynamic_spread(cfg.spread, open_price, atr_val, cfg.dynamic_spread)
+
+        # 2. Estimate position size for market impact calculation
+        rough_risk = max(1e-8, abs(open_price - signal.stop_loss))
+        rough_size = (current_equity * cfg.risk_per_trade) / rough_risk
+
+        # 3. Dynamic slippage incorporating volume impact and execution latency
+        eff_slippage, impact_slip, latency_slip = compute_dynamic_slippage(
+            base_slippage=cfg.slippage,
+            price=open_price,
+            order_size=rough_size,
+            bar_volume=bar_volume,
+            atr_val=atr_val,
+            latency_ms=cfg.latency_ms,
+            volume_impact_enabled=cfg.volume_slippage,
+        )
+
         # Calculate fill price with adverse slippage and spread buffer
         if signal.side == TradeSide.LONG:
-            fill_price = open_price * (1.0 + cfg.slippage) * (1.0 + cfg.spread)
+            fill_price = open_price * (1.0 + eff_slippage) * (1.0 + eff_spread)
             if fill_price <= signal.stop_loss:
                 return None  # Invalidation: gapped past stop loss
             risk_per_unit = fill_price - signal.stop_loss
         else:
-            fill_price = open_price * (1.0 - cfg.slippage) * (1.0 - cfg.spread)
+            fill_price = open_price * (1.0 - eff_slippage) * (1.0 - eff_spread)
             if fill_price >= signal.stop_loss:
                 return None  # Invalidation: gapped past stop loss
             risk_per_unit = signal.stop_loss - fill_price
@@ -617,7 +701,8 @@ class BacktestEngine:
             return None
 
         entry_fee = nominal_size * fill_price * cfg.taker_fee
-        slippage_cost = nominal_size * fill_price * cfg.slippage
+        slippage_cost = nominal_size * fill_price * eff_slippage
+        latency_cost = nominal_size * fill_price * latency_slip
 
         # Adjust TP targets relative to actual executed fill price
         if signal.side == TradeSide.LONG:
@@ -644,6 +729,7 @@ class BacktestEngine:
             setup_type=signal.setup_type,
             entry_fee=entry_fee,
             slippage_paid=slippage_cost,
+            latency_delay_cost=latency_cost,
         )
 
     def _process_active_position(
@@ -657,90 +743,179 @@ class BacktestEngine:
         timestamp: Any,
         cfg: BacktestConfig,
         equity_before: float,
+        bar_volume: float = 1000.0,
+        atr_val: float = 0.0,
     ) -> Optional[TradeRecord]:
         """
         Evaluates active position against candle t.
-        Enforces conservative pessimistic intracandle execution, TP1 scale-out,
-        Breakeven stop movement, and runner TP2 management.
+        Supports both:
+        1. "path" mode: chronological 4-point intracandle path reconstruction
+           (Green: O -> L -> H -> C; Red: O -> H -> L -> C)
+        2. "pessimistic" mode: conservative pessimistic SL-first execution
+        Also manages TP1 partial scale-out, Breakeven stop movement, and runner TP2.
         """
         side = pos.side
         duration = t - pos.entry_index
+        is_bullish = close_price >= open_price
 
-        # ==================== LONG POSITION ====================
-        if side == TradeSide.LONG:
-            sl_hit = low_price <= pos.current_sl
-            tp1_hit = not pos.tp1_hit and high_price >= pos.tp1_price
-            tp2_hit = high_price >= pos.tp2_price
+        # ====================================================================
+        # INTRACANDLE PATH RECONSTRUCTION MODE
+        # ====================================================================
+        if cfg.intracandle_mode == "path":
+            if side == TradeSide.LONG:
+                if is_bullish:
+                    # Green Candle Path: Open -> Low -> High -> Close
+                    # Leg 1: Open -> Low (Check Stop Loss)
+                    if low_price <= pos.current_sl:
+                        return self._close_position_at_stop(
+                            pos, t, pos.current_sl, timestamp, cfg, equity_before, bar_volume, atr_val
+                        )
+                    # Leg 2: Low -> High (Check TP1 and TP2)
+                    if not pos.tp1_hit and high_price >= pos.tp1_price:
+                        self._execute_tp1_scaleout(pos, t, pos.tp1_price, timestamp, cfg)
+                        if high_price >= pos.tp2_price:
+                            return self._close_runner_at_tp2(
+                                pos, t, pos.tp2_price, timestamp, cfg, equity_before
+                            )
+                    elif pos.tp1_hit and high_price >= pos.tp2_price:
+                        return self._close_runner_at_tp2(
+                            pos, t, pos.tp2_price, timestamp, cfg, equity_before
+                        )
+                    # Leg 3: High -> Close (Check Breakeven retracement)
+                    if pos.tp1_hit and close_price <= pos.current_sl:
+                        return self._close_position_at_stop(
+                            pos, t, pos.current_sl, timestamp, cfg, equity_before, bar_volume, atr_val
+                        )
+                else:
+                    # Red Candle Path: Open -> High -> Low -> Close
+                    # Leg 1: Open -> High (Check TP1 and TP2)
+                    if not pos.tp1_hit and high_price >= pos.tp1_price:
+                        self._execute_tp1_scaleout(pos, t, pos.tp1_price, timestamp, cfg)
+                        if high_price >= pos.tp2_price:
+                            return self._close_runner_at_tp2(
+                                pos, t, pos.tp2_price, timestamp, cfg, equity_before
+                            )
+                    elif pos.tp1_hit and high_price >= pos.tp2_price:
+                        return self._close_runner_at_tp2(
+                            pos, t, pos.tp2_price, timestamp, cfg, equity_before
+                        )
+                    # Leg 2: High -> Low (Check Stop Loss or BE)
+                    if low_price <= pos.current_sl:
+                        return self._close_position_at_stop(
+                            pos, t, pos.current_sl, timestamp, cfg, equity_before, bar_volume, atr_val
+                        )
 
-            # Pessimistic execution: if SL and TP both triggered on same bar, SL triggers first!
-            if cfg.pessimistic_intracandle and sl_hit and (tp1_hit or tp2_hit):
-                return self._close_position_at_stop(
-                    pos, t, pos.current_sl, timestamp, cfg, equity_before
-                )
+            else:  # SHORT
+                if is_bullish:
+                    # Green Candle Path: Open -> Low -> High -> Close
+                    # Leg 1: Open -> Low (Check TP1 and TP2)
+                    if not pos.tp1_hit and low_price <= pos.tp1_price:
+                        self._execute_tp1_scaleout(pos, t, pos.tp1_price, timestamp, cfg)
+                        if low_price <= pos.tp2_price:
+                            return self._close_runner_at_tp2(
+                                pos, t, pos.tp2_price, timestamp, cfg, equity_before
+                            )
+                    elif pos.tp1_hit and low_price <= pos.tp2_price:
+                        return self._close_runner_at_tp2(
+                            pos, t, pos.tp2_price, timestamp, cfg, equity_before
+                        )
+                    # Leg 2: Low -> High (Check Stop Loss or BE)
+                    if high_price >= pos.current_sl:
+                        return self._close_position_at_stop(
+                            pos, t, pos.current_sl, timestamp, cfg, equity_before, bar_volume, atr_val
+                        )
+                else:
+                    # Red Candle Path: Open -> High -> Low -> Close
+                    # Leg 1: Open -> High (Check Stop Loss)
+                    if high_price >= pos.current_sl:
+                        return self._close_position_at_stop(
+                            pos, t, pos.current_sl, timestamp, cfg, equity_before, bar_volume, atr_val
+                        )
+                    # Leg 2: High -> Low (Check TP1 and TP2)
+                    if not pos.tp1_hit and low_price <= pos.tp1_price:
+                        self._execute_tp1_scaleout(pos, t, pos.tp1_price, timestamp, cfg)
+                        if low_price <= pos.tp2_price:
+                            return self._close_runner_at_tp2(
+                                pos, t, pos.tp2_price, timestamp, cfg, equity_before
+                            )
+                    elif pos.tp1_hit and low_price <= pos.tp2_price:
+                        return self._close_runner_at_tp2(
+                            pos, t, pos.tp2_price, timestamp, cfg, equity_before
+                        )
+                    # Leg 3: Low -> Close (Check Breakeven retracement)
+                    if pos.tp1_hit and close_price >= pos.current_sl:
+                        return self._close_position_at_stop(
+                            pos, t, pos.current_sl, timestamp, cfg, equity_before, bar_volume, atr_val
+                        )
 
-            # Standard Stop Loss hit
-            if sl_hit:
-                return self._close_position_at_stop(
-                    pos, t, pos.current_sl, timestamp, cfg, equity_before
-                )
-
-            # Take Profit 1 Triggered (50% scale-out)
-            if tp1_hit:
-                self._execute_tp1_scaleout(pos, t, pos.tp1_price, timestamp, cfg)
-
-                # Check if TP2 also hit on the same candle after TP1 scaleout
-                if high_price >= pos.tp2_price:
-                    return self._close_runner_at_tp2(
-                        pos, t, pos.tp2_price, timestamp, cfg, equity_before
-                    )
-
-            # Take Profit 2 Triggered on runner
-            elif pos.tp1_hit and tp2_hit:
-                return self._close_runner_at_tp2(
-                    pos, t, pos.tp2_price, timestamp, cfg, equity_before
-                )
-
-            # Timeout exit
+            # Check max holding timeout in path mode
             if duration >= cfg.max_holding_bars:
                 return self._close_position_at_market(
                     pos, t, close_price, timestamp, ExitReason.TIMEOUT, cfg, equity_before
                 )
 
-        # ==================== SHORT POSITION ====================
-        else:
-            sl_hit = high_price >= pos.current_sl
-            tp1_hit = not pos.tp1_hit and low_price <= pos.tp1_price
-            tp2_hit = low_price <= pos.tp2_price
+            return None
 
-            # Pessimistic execution
+        # ====================================================================
+        # PESSIMISTIC MODE (Fallback)
+        # ====================================================================
+        if side == TradeSide.LONG:
+            sl_hit = low_price <= pos.current_sl
+            tp1_hit = not pos.tp1_hit and high_price >= pos.tp1_price
+            tp2_hit = high_price >= pos.tp2_price
+
             if cfg.pessimistic_intracandle and sl_hit and (tp1_hit or tp2_hit):
                 return self._close_position_at_stop(
-                    pos, t, pos.current_sl, timestamp, cfg, equity_before
+                    pos, t, pos.current_sl, timestamp, cfg, equity_before, bar_volume, atr_val
                 )
 
-            # Standard Stop Loss hit
             if sl_hit:
                 return self._close_position_at_stop(
-                    pos, t, pos.current_sl, timestamp, cfg, equity_before
+                    pos, t, pos.current_sl, timestamp, cfg, equity_before, bar_volume, atr_val
                 )
 
-            # Take Profit 1 Triggered (50% scale-out)
             if tp1_hit:
                 self._execute_tp1_scaleout(pos, t, pos.tp1_price, timestamp, cfg)
-
-                # Check if TP2 also hit on the same candle after TP1 scaleout
-                if low_price <= pos.tp2_price:
+                if high_price >= pos.tp2_price:
                     return self._close_runner_at_tp2(
                         pos, t, pos.tp2_price, timestamp, cfg, equity_before
                     )
-
-            # Take Profit 2 Triggered on runner
             elif pos.tp1_hit and tp2_hit:
                 return self._close_runner_at_tp2(
                     pos, t, pos.tp2_price, timestamp, cfg, equity_before
                 )
 
-            # Timeout exit
+            if duration >= cfg.max_holding_bars:
+                return self._close_position_at_market(
+                    pos, t, close_price, timestamp, ExitReason.TIMEOUT, cfg, equity_before
+                )
+
+        else:
+            sl_hit = high_price >= pos.current_sl
+            tp1_hit = not pos.tp1_hit and low_price <= pos.tp1_price
+            tp2_hit = low_price <= pos.tp2_price
+
+            if cfg.pessimistic_intracandle and sl_hit and (tp1_hit or tp2_hit):
+                return self._close_position_at_stop(
+                    pos, t, pos.current_sl, timestamp, cfg, equity_before, bar_volume, atr_val
+                )
+
+            if sl_hit:
+                return self._close_position_at_stop(
+                    pos, t, pos.current_sl, timestamp, cfg, equity_before, bar_volume, atr_val
+                )
+
+            if tp1_hit:
+                self._execute_tp1_scaleout(pos, t, pos.tp1_price, timestamp, cfg)
+                if low_price <= pos.tp2_price:
+                    return self._close_runner_at_tp2(
+                        pos, t, pos.tp2_price, timestamp, cfg, equity_before
+                    )
+            elif pos.tp1_hit and tp2_hit:
+                return self._close_runner_at_tp2(
+                    pos, t, pos.tp2_price, timestamp, cfg, equity_before
+                )
+
             if duration >= cfg.max_holding_bars:
                 return self._close_position_at_market(
                     pos, t, close_price, timestamp, ExitReason.TIMEOUT, cfg, equity_before
@@ -842,20 +1017,32 @@ class BacktestEngine:
         timestamp: Any,
         cfg: BacktestConfig,
         equity_before: float,
+        bar_volume: float = 1000.0,
+        atr_val: float = 0.0,
     ) -> TradeRecord:
         """
-        Executes stop loss exit with adverse slippage and taker fee.
+        Executes stop loss exit with dynamic adverse slippage and taker fee.
         """
         rem_size = pos.remaining_size
+        eff_slip, _, _ = compute_dynamic_slippage(
+            base_slippage=cfg.slippage,
+            price=sl_price,
+            order_size=rem_size,
+            bar_volume=bar_volume,
+            atr_val=atr_val,
+            latency_ms=cfg.latency_ms,
+            volume_impact_enabled=cfg.volume_slippage,
+        )
+
         if pos.side == TradeSide.LONG:
-            exit_px = sl_price * (1.0 - cfg.slippage)
+            exit_px = sl_price * (1.0 - eff_slip)
             gross = rem_size * (exit_px - pos.entry_price)
         else:
-            exit_px = sl_price * (1.0 + cfg.slippage)
+            exit_px = sl_price * (1.0 + eff_slip)
             gross = rem_size * (pos.entry_price - exit_px)
 
         exit_fee = rem_size * exit_px * cfg.taker_fee
-        slippage_cost = rem_size * exit_px * cfg.slippage
+        slippage_cost = rem_size * exit_px * eff_slip
         pos.runner_fee = exit_fee
         pos.slippage_paid += slippage_cost
 
