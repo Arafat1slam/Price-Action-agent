@@ -42,6 +42,8 @@ from engines.ml_engine import (
     MLPredictor,
     ModelTrainer,
     PurgedTimeSeriesSplit,
+    PurgedWalkForwardValidator,
+    WalkForwardValidationReport,
 )
 
 console = Console()
@@ -180,6 +182,25 @@ def evaluate_purged_cross_validation(
     return cv_scores
 
 
+def evaluate_walk_forward_validation(
+    X: np.ndarray,
+    y: np.ndarray,
+    n_splits: int = 5,
+    purge_window: int = 5,
+) -> WalkForwardValidationReport:
+    """
+    Executes Purged Walk-Forward Out-of-Sample Validation across sequential expanding windows.
+    Calculates Precision/Recall per class, Sharpe ratio, Max Drawdown %, and directional Win Rate.
+    """
+    validator = PurgedWalkForwardValidator(
+        n_splits=n_splits,
+        purge_window=purge_window,
+        min_train_size=200,
+        expanding=True,
+    )
+    return validator.validate(X, y)
+
+
 def benchmark_streaming_inference(
     model_path: str,
     test_df: pd.DataFrame,
@@ -219,6 +240,7 @@ def print_training_report(
     cv_scores: List[Dict[str, float]],
     dataset_summaries: List[Dict[str, Any]],
     bench_results: Dict[str, float],
+    wf_report: Optional[WalkForwardValidationReport] = None,
 ) -> None:
     """Prints comprehensive formatted training and inference metrics report."""
     console.print()
@@ -252,25 +274,68 @@ def print_training_report(
         )
     console.print(ds_table)
 
-    # 2. Purged Cross-Validation Table
-    cv_table = Table(title="Purged Time-Series Cross Validation (Embargo Gap = 5 Candles)", border_style="yellow")
-    cv_table.add_column("Fold", justify="center", style="bold")
-    cv_table.add_column("Train Size", justify="right")
-    cv_table.add_column("Test Size", justify="right")
-    cv_table.add_column("Accuracy", justify="right")
-    cv_table.add_column("Balanced Accuracy", justify="right", style="bold yellow")
-    cv_table.add_column("Macro F1", justify="right", style="bold green")
-
-    for cv in cv_scores:
-        cv_table.add_row(
-            f"Fold {cv['fold']}",
-            f"{cv['train_size']:,}",
-            f"{cv['test_size']:,}",
-            f"{cv['accuracy']:.4f}",
-            f"{cv['balanced_accuracy']:.4f}",
-            f"{cv['f1_macro']:.4f}",
+    # 2. Walk-Forward Out-of-Sample Validation Table
+    if wf_report and wf_report.folds:
+        wf_table = Table(
+            title=f"Purged Walk-Forward OOS Validation ({wf_report.n_folds} Expanding Folds, Purge=5)",
+            border_style="yellow",
         )
-    console.print(cv_table)
+        wf_table.add_column("Fold", justify="center", style="bold")
+        wf_table.add_column("Train / OOS", justify="center")
+        wf_table.add_column("Accuracy", justify="right")
+        wf_table.add_column("Macro F1", justify="right", style="bold green")
+        wf_table.add_column("Bull P/R", justify="center")
+        wf_table.add_column("Bear P/R", justify="center")
+        wf_table.add_column("Win Rate", justify="right", style="cyan")
+        wf_table.add_column("Sharpe", justify="right", style="bold yellow")
+        wf_table.add_column("Max DD", justify="right", style="red")
+        wf_table.add_column("Net Ret", justify="right", style="bold")
+
+        for f in wf_report.folds:
+            wf_table.add_row(
+                f"Fold {f.fold_idx}",
+                f"{f.train_size:,} / {f.test_size:,}",
+                f"{f.accuracy:.3f}",
+                f"{f.f1_macro:.3f}",
+                f"{f.bullish_precision:.2f}/{f.bullish_recall:.2f}",
+                f"{f.bearish_precision:.2f}/{f.bearish_recall:.2f}",
+                f"{f.directional_win_rate:.1f}%",
+                f"{f.simulated_sharpe:.2f}",
+                f"{f.simulated_max_dd_pct:.1f}%",
+                f"{f.simulated_net_return_pct:+.1f}%",
+            )
+        console.print(wf_table)
+
+        console.print(
+            Panel(
+                f"[bold cyan]Walk-Forward Summary:[/bold cyan] "
+                f"Avg OOS Sharpe: [bold yellow]{wf_report.avg_sharpe:.2f}[/bold yellow] | "
+                f"Max Drawdown: [bold red]{wf_report.overall_max_dd_pct:.1f}%[/bold red] | "
+                f"Directional Win Rate: [bold green]{wf_report.avg_directional_win_rate:.1f}%[/bold green] | "
+                f"Avg Macro F1: [bold]{wf_report.avg_f1_macro:.3f}[/bold]",
+                border_style="yellow",
+            )
+        )
+    elif cv_scores:
+        # Purged CV Fallback
+        cv_table = Table(title="Purged Time-Series Cross Validation (Embargo Gap = 5 Candles)", border_style="yellow")
+        cv_table.add_column("Fold", justify="center", style="bold")
+        cv_table.add_column("Train Size", justify="right")
+        cv_table.add_column("Test Size", justify="right")
+        cv_table.add_column("Accuracy", justify="right")
+        cv_table.add_column("Balanced Accuracy", justify="right", style="bold yellow")
+        cv_table.add_column("Macro F1", justify="right", style="bold green")
+
+        for cv in cv_scores:
+            cv_table.add_row(
+                f"Fold {cv['fold']}",
+                f"{cv['train_size']:,}",
+                f"{cv['test_size']:,}",
+                f"{cv['accuracy']:.4f}",
+                f"{cv['balanced_accuracy']:.4f}",
+                f"{cv['f1_macro']:.4f}",
+            )
+        console.print(cv_table)
 
     # 3. Overall Holdout Performance Metrics Table
     m_table = Table(title="Calibrated Model Holdout Evaluation Metrics (Platt Scaling)", border_style="green")
@@ -334,6 +399,7 @@ def main() -> int:
     parser.add_argument("--cv-splits", type=int, default=4, help="Number of purged CV splits")
     parser.add_argument("--purge-gap", type=int, default=5, help="Purge gap buffer (number of candles)")
     parser.add_argument("--random-state", type=int, default=42, help="Random seed")
+    parser.add_argument("--walk-forward", action="store_true", default=True, help="Run purged walk-forward validation")
 
     args = parser.parse_args()
 
@@ -352,11 +418,19 @@ def main() -> int:
 
     console.print(f"[bold]Aggregated Data:[/bold] Train = {X_train.shape}, Validation = {X_val.shape}")
 
-    # 2. Evaluate Purged Time-Series Cross Validation
-    console.print("[bold cyan]Evaluating Purged Time-Series Cross Validation (4 folds)...[/bold cyan]")
-    cv_scores = evaluate_purged_cross_validation(
-        X_train, y_train, n_splits=args.cv_splits, purge_window=args.purge_gap
-    )
+    # 2. Evaluate Purged Walk-Forward Out-of-Sample Validation
+    wf_report = None
+    cv_scores = []
+    if args.walk_forward:
+        console.print("[bold cyan]Evaluating Purged Walk-Forward Out-of-Sample Validation (5 folds)...[/bold cyan]")
+        wf_report = evaluate_walk_forward_validation(
+            X_train, y_train, n_splits=5, purge_window=args.purge_gap
+        )
+    else:
+        console.print("[bold cyan]Evaluating Purged Time-Series Cross Validation (4 folds)...[/bold cyan]")
+        cv_scores = evaluate_purged_cross_validation(
+            X_train, y_train, n_splits=args.cv_splits, purge_window=args.purge_gap
+        )
 
     # 3. Train & Calibrate Production Model Pipeline
     console.print("[bold cyan]Training HistGradientBoostingClassifier & Platt Scaling Calibrator...[/bold cyan]")
@@ -394,6 +468,7 @@ def main() -> int:
         cv_scores=cv_scores,
         dataset_summaries=dataset_summaries,
         bench_results=bench_results,
+        wf_report=wf_report,
     )
 
     t_total = time.perf_counter() - t_start

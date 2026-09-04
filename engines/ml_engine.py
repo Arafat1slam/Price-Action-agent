@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Dict, Generator, List, Optional, Tuple, Union
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -660,7 +661,7 @@ class LabelGenerator:
 
 
 # ============================================================================
-# 3. Purged Time-Series Split
+# 3. Purged Time-Series Split & Walk-Forward Validation
 # ============================================================================
 class PurgedTimeSeriesSplit:
     """
@@ -686,6 +687,198 @@ class PurgedTimeSeriesSplit:
             test_idx = np.arange(test_start, test_end)
             if len(train_idx) > 50 and len(test_idx) > 10:
                 yield train_idx, test_idx
+
+
+@dataclass
+class WalkForwardFoldResult:
+    fold_idx: int
+    train_size: int
+    test_size: int
+    accuracy: float
+    balanced_accuracy: float
+    precision_macro: float
+    recall_macro: float
+    f1_macro: float
+    bullish_precision: float
+    bullish_recall: float
+    bearish_precision: float
+    bearish_recall: float
+    directional_win_rate: float
+    simulated_sharpe: float
+    simulated_max_dd_pct: float
+    simulated_net_return_pct: float
+
+
+@dataclass
+class WalkForwardValidationReport:
+    n_folds: int
+    avg_accuracy: float
+    avg_f1_macro: float
+    avg_directional_win_rate: float
+    avg_sharpe: float
+    overall_max_dd_pct: float
+    overall_simulated_return_pct: float
+    folds: List[WalkForwardFoldResult]
+
+
+class PurgedWalkForwardValidator:
+    """
+    Time-Series Purged Walk-Forward Cross-Validator.
+    Splits sequential dataset into rolling or expanding chronological training periods,
+    applies an embargo/purge gap, and validates strictly on out-of-sample data.
+    Computes Out-of-Sample metrics: precision, recall, F1, Sharpe ratio, and Max Drawdown.
+    """
+
+    def __init__(
+        self,
+        n_splits: int = 5,
+        purge_window: int = 5,
+        min_train_size: int = 150,
+        expanding: bool = True,
+        random_state: int = 42,
+    ):
+        self.n_splits = n_splits
+        self.purge_window = purge_window
+        self.min_train_size = min_train_size
+        self.expanding = expanding
+        self.random_state = random_state
+
+    def validate(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        raw_prices: Optional[np.ndarray] = None,
+    ) -> WalkForwardValidationReport:
+        n = len(X)
+        fold_size = n // (self.n_splits + 1)
+        folds_res: List[WalkForwardFoldResult] = []
+        all_strat_returns: List[float] = []
+
+        for i in range(1, self.n_splits + 1):
+            train_end = i * fold_size - self.purge_window
+            test_start = i * fold_size
+            test_end = test_start + fold_size if i < self.n_splits else n
+
+            train_start = 0 if self.expanding else max(0, train_end - 2 * fold_size)
+            train_idx = np.arange(train_start, max(0, train_end))
+            test_idx = np.arange(test_start, test_end)
+
+            if len(train_idx) < self.min_train_size or len(test_idx) < 20:
+                continue
+
+            X_tr, y_tr = X[train_idx], y[train_idx]
+            X_te, y_te = X[test_idx], y[test_idx]
+
+            # Fit base estimator
+            model = HistGradientBoostingClassifier(
+                loss="log_loss",
+                learning_rate=0.04,
+                max_iter=60,
+                max_leaf_nodes=31,
+                min_samples_leaf=20,
+                l2_regularization=1.5,
+                class_weight="balanced",
+                random_state=self.random_state + i,
+            )
+            model.fit(X_tr, y_tr)
+            y_pred = model.predict(X_te)
+
+            # Standard Metrics
+            acc = float(accuracy_score(y_te, y_pred))
+            b_acc = float(balanced_accuracy_score(y_te, y_pred))
+            prec_m = float(precision_score(y_te, y_pred, average="macro", zero_division=0))
+            rec_m = float(recall_score(y_te, y_pred, average="macro", zero_division=0))
+            f1_m = float(f1_score(y_te, y_pred, average="macro", zero_division=0))
+
+            # Class 2: BULLISH (+1), Class 0: BEARISH (-1)
+            bull_prec = float(precision_score(y_te == 2, y_pred == 2, zero_division=0))
+            bull_rec = float(recall_score(y_te == 2, y_pred == 2, zero_division=0))
+            bear_prec = float(precision_score(y_te == 0, y_pred == 0, zero_division=0))
+            bear_rec = float(recall_score(y_te == 0, y_pred == 0, zero_division=0))
+
+            # Simulated ML strategy signal returns
+            if raw_prices is not None and len(raw_prices) == n:
+                te_prices = raw_prices[test_idx]
+                fwd_ret = np.zeros(len(y_te))
+                for k in range(len(y_te)):
+                    exit_idx = min(len(te_prices) - 1, k + 5)
+                    fwd_ret[k] = (te_prices[exit_idx] - te_prices[k]) / max(1e-8, te_prices[k])
+            else:
+                # Proxy 5-bar forward return from target labels
+                fwd_ret = np.where(y_te == 2, 0.015, np.where(y_te == 0, -0.015, 0.0))
+
+            # Trade return: Long on Bullish (2), Short on Bearish (0), Flat on Neutral (1)
+            signal_dir = np.where(y_pred == 2, 1.0, np.where(y_pred == 0, -1.0, 0.0))
+            strat_ret = signal_dir * fwd_ret
+
+            active_trades = np.where(signal_dir != 0)[0]
+            win_count = np.sum(strat_ret[active_trades] > 0)
+            win_rate = (win_count / max(1, len(active_trades))) * 100.0
+
+            # Sharpe Ratio
+            ret_mean = np.mean(strat_ret)
+            ret_std = np.std(strat_ret)
+            sharpe = float((ret_mean / (ret_std + 1e-8)) * np.sqrt(365 * 24 / 5))
+
+            # Max Drawdown
+            equity = np.cumprod(1.0 + strat_ret)
+            peak = np.maximum.accumulate(equity)
+            dd_pct = (peak - equity) / np.maximum(peak, 1e-8) * 100.0
+            max_dd = float(np.max(dd_pct))
+            net_ret = float((equity[-1] - 1.0) * 100.0)
+
+            all_strat_returns.extend(strat_ret)
+
+            folds_res.append(
+                WalkForwardFoldResult(
+                    fold_idx=i,
+                    train_size=len(train_idx),
+                    test_size=len(test_idx),
+                    accuracy=round(acc, 4),
+                    balanced_accuracy=round(b_acc, 4),
+                    precision_macro=round(prec_m, 4),
+                    recall_macro=round(rec_m, 4),
+                    f1_macro=round(f1_m, 4),
+                    bullish_precision=round(bull_prec, 4),
+                    bullish_recall=round(bull_rec, 4),
+                    bearish_precision=round(bear_prec, 4),
+                    bearish_recall=round(bear_rec, 4),
+                    directional_win_rate=round(win_rate, 2),
+                    simulated_sharpe=round(sharpe, 2),
+                    simulated_max_dd_pct=round(max_dd, 2),
+                    simulated_net_return_pct=round(net_ret, 2),
+                )
+            )
+
+        if not folds_res:
+            return WalkForwardValidationReport(
+                n_folds=0, avg_accuracy=0.0, avg_f1_macro=0.0,
+                avg_directional_win_rate=0.0, avg_sharpe=0.0,
+                overall_max_dd_pct=0.0, overall_simulated_return_pct=0.0,
+                folds=[]
+            )
+
+        avg_acc = float(np.mean([f.accuracy for f in folds_res]))
+        avg_f1 = float(np.mean([f.f1_macro for f in folds_res]))
+        avg_wr = float(np.mean([f.directional_win_rate for f in folds_res]))
+        avg_sh = float(np.mean([f.simulated_sharpe for f in folds_res]))
+
+        # Overall equity across all OOS predictions
+        tot_eq = np.cumprod(1.0 + np.array(all_strat_returns))
+        tot_pk = np.maximum.accumulate(tot_eq)
+        tot_dd = float(np.max((tot_pk - tot_eq) / np.maximum(tot_pk, 1e-8) * 100.0))
+        tot_ret = float((tot_eq[-1] - 1.0) * 100.0)
+
+        return WalkForwardValidationReport(
+            n_folds=len(folds_res),
+            avg_accuracy=round(avg_acc, 4),
+            avg_f1_macro=round(avg_f1, 4),
+            avg_directional_win_rate=round(avg_wr, 2),
+            avg_sharpe=round(avg_sh, 2),
+            overall_max_dd_pct=round(tot_dd, 2),
+            overall_simulated_return_pct=round(tot_ret, 2),
+            folds=folds_res
+        )
 
 
 # ============================================================================
