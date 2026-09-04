@@ -1,4 +1,4 @@
-﻿"""
+"""
 core/models.py - Canonical Data Models for Price Action Agent v2.0
 """
 from dataclasses import dataclass, field
@@ -130,6 +130,18 @@ class ConfluenceReport:
     volume_profile: Optional[VolumeProfileZone] = None
     ml_prediction: Optional[MLInferenceResult] = None
 
+class TradeStyle(str, Enum):
+    SCALP = "SCALP"
+    INTRADAY = "INTRADAY"
+    SWING = "SWING"
+
+class ExecutionState(str, Enum):
+    WAITING_FOR_PRICE = "WAITING_FOR_PRICE"
+    IN_ENTRY_ZONE = "IN_ENTRY_ZONE"
+    CONFIRMED_ENTRY_TRIGGER = "CONFIRMED_ENTRY_TRIGGER"
+    INVALIDATED = "INVALIDATED"
+    TARGET_HIT = "TARGET_HIT"
+
 @dataclass
 class TradeSetup:
     setup_id: str
@@ -147,3 +159,10 @@ class TradeSetup:
     confidence_score: int
     rationale: List[str] = field(default_factory=list)
     invalidation_reason: str = ""
+    tp1_probability: int = 70               # Estimated % chance of hitting TP1
+    tp2_probability: int = 55               # Estimated % chance of hitting TP2
+    recommended_risk_pct: float = 1.0       # Recommended portfolio risk % (e.g. 1.5%)
+    position_size_usd: float = 1000.0       # Suggested position sizing
+    execution_state: str = "WAITING_FOR_PRICE" # "WAITING_FOR_PRICE", "IN_ENTRY_ZONE", "CONFIRMED_ENTRY_TRIGGER"
+    entry_distance_pct: float = 0.0         # Distance from current price to entry (%): e.g. -0.45%
+    entry_action: str = ""                  # Actionable instruction (WAIT vs ENTER NOW)

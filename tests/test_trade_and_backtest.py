@@ -590,6 +590,76 @@ def test_enforce_min_rr_gate():
     assert low_rr_setup.effective_rr < 1.80
 
 
+def test_tp_probabilities_and_risk_sizing():
+    """Verifies that TP1/TP2 probabilities and recommended risk % are accurately computed."""
+    engine = TradeSetupEngine(min_effective_rr=1.80)
+    setup = engine._create_trade_setup(
+        symbol="BTCUSDT",
+        timestamp=datetime.now(),
+        setup_type=SetupType.SMC_PULLBACK_FVG,
+        direction="LONG",
+        entry=80000.0,
+        sl=79000.0,
+        tp1=81600.0,
+        tp2=83000.0,
+        confidence=85,
+        rationale=["High conviction institutional FVG retest"],
+        invalidation_reason="Invalidated below 79000"
+    )
+
+    # TP probabilities
+    assert 40 <= setup.tp1_probability <= 92
+    assert 25 <= setup.tp2_probability <= 85
+    assert setup.tp1_probability >= setup.tp2_probability  # TP1 must have equal or higher probability than TP2
+
+    # High confidence (85%) should recommend 2.0% risk
+    assert setup.recommended_risk_pct == 2.0
+    assert setup.position_size_usd > 0.0
+
+
+def test_entry_confirmation_state_machine():
+    """Verifies state transitions: WAITING_FOR_PRICE -> CONFIRMED_ENTRY_TRIGGER -> TARGET_HIT & INVALIDATED."""
+    from core.models import ExecutionState
+
+    engine = TradeSetupEngine()
+    setup = engine._create_trade_setup(
+        symbol="BTCUSDT",
+        timestamp=datetime.now(),
+        setup_type=SetupType.SMC_PULLBACK_FVG,
+        direction="LONG",
+        entry=80000.0,
+        sl=79000.0,
+        tp1=81600.0,
+        tp2=83000.0,
+        confidence=80,
+        rationale=["Test setup"],
+        invalidation_reason="Test invalidation",
+        current_price=80500.0  # Current price is 500 above entry
+    )
+
+    # 1. Price is +0.62% above entry -> Must be WAITING_FOR_PRICE (Do not chase)
+    assert setup.execution_state == ExecutionState.WAITING_FOR_PRICE.value
+    assert "DO NOT CHASE" in setup.entry_action
+    assert setup.entry_distance_pct > 0.0
+
+    # 2. Price pulls back into entry zone ($80,050, within 0.15% tolerance) -> CONFIRMED_ENTRY_TRIGGER
+    candle_reaction = {"open": 79980.0, "high": 80100.0, "low": 79950.0, "close": 80050.0, "volume": 50.0}
+    engine.update_execution_state(setup, current_price=80050.0, candle=candle_reaction)
+    assert setup.execution_state == ExecutionState.CONFIRMED_ENTRY_TRIGGER.value
+    assert "CONFIRMED ENTRY TRIGGER" in setup.entry_action
+
+    # 3. Price drops below Stop Loss -> INVALIDATED
+    engine.update_execution_state(setup, current_price=78900.0)
+    assert setup.execution_state == ExecutionState.INVALIDATED.value
+    assert "SETUP INVALIDATED" in setup.entry_action
+
+    # 4. Price surges to TP1 -> TARGET_HIT
+    engine.update_execution_state(setup, current_price=81700.0)
+    assert setup.execution_state == ExecutionState.TARGET_HIT.value
+    assert "TARGET 1 HIT" in setup.entry_action
+
+
+
 # ============================================================================
 # 13. Symbol Mapper & Normalizer Tests
 # ============================================================================

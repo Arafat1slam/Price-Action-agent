@@ -27,6 +27,8 @@ from core.models import (
     FairValueGap,
     OrderBlock,
     ChartPattern,
+    ExecutionState,
+    TradeStyle,
 )
 
 
@@ -189,7 +191,8 @@ class TradeSetupEngine:
                             f"Entry anchored at Consequent Encroachment (50%) midline ${fvg.midpoint:,.2f}",
                             f"Invalidation placed below FVG boundary with 0.2*ATR buffer (${sl:,.2f})"
                         ],
-                        invalidation_reason=f"Closed below Bullish FVG lower threshold at ${fvg.bottom:,.2f}"
+                        invalidation_reason=f"Closed below Bullish FVG lower threshold at ${fvg.bottom:,.2f}",
+                        current_price=current_price,
                     )
 
             # Short Setup on Bearish FVG
@@ -221,7 +224,8 @@ class TradeSetupEngine:
                             f"Entry anchored at Consequent Encroachment (50%) midline ${fvg.midpoint:,.2f}",
                             f"Invalidation placed above FVG boundary with 0.2*ATR buffer (${sl:,.2f})"
                         ],
-                        invalidation_reason=f"Closed above Bearish FVG upper threshold at ${fvg.top:,.2f}"
+                        invalidation_reason=f"Closed above Bearish FVG upper threshold at ${fvg.top:,.2f}",
+                        current_price=current_price,
                     )
         return None
 
@@ -269,7 +273,8 @@ class TradeSetupEngine:
                             f"Displacement confirmation with volume ${ob.volume:,.1f}",
                             f"Stop Loss secured below OB invalidation level (${sl:,.2f})"
                         ],
-                        invalidation_reason=f"Closed past Bullish Order Block low at ${ob.bottom:,.2f}"
+                        invalidation_reason=f"Closed past Bullish Order Block low at ${ob.bottom:,.2f}",
+                        current_price=current_price,
                     )
 
             elif ob.bias == BiasType.BEARISH and rep.overall_bias in [BiasType.BEARISH, BiasType.STRONG_BEARISH, BiasType.NEUTRAL]:
@@ -298,7 +303,8 @@ class TradeSetupEngine:
                             f"Displacement confirmation with volume ${ob.volume:,.1f}",
                             f"Stop Loss secured above OB invalidation level (${sl:,.2f})"
                         ],
-                        invalidation_reason=f"Closed past Bearish Order Block high at ${ob.top:,.2f}"
+                        invalidation_reason=f"Closed past Bearish Order Block high at ${ob.top:,.2f}",
+                        current_price=current_price,
                     )
         return None
 
@@ -362,7 +368,8 @@ class TradeSetupEngine:
                             f"Significant wick rejection of {lw*100:.1f}% indicates stop-run absorption",
                             f"Stop Loss anchored below the sweep extreme at ${sl:,.2f}"
                         ],
-                        invalidation_reason=f"Breach and acceptance below sweep low ${l:,.2f}"
+                        invalidation_reason=f"Breach and acceptance below sweep low ${l:,.2f}",
+                        current_price=current_price,
                     )
 
             # Bearish BSL Sweep (Turtle Soup short reversal)
@@ -392,7 +399,8 @@ class TradeSetupEngine:
                             f"Significant wick rejection of {uw*100:.1f}% indicates institutional distribution",
                             f"Stop Loss anchored above the sweep extreme at ${sl:,.2f}"
                         ],
-                        invalidation_reason=f"Breach and acceptance above sweep high ${h:,.2f}"
+                        invalidation_reason=f"Breach and acceptance above sweep high ${h:,.2f}",
+                        current_price=current_price,
                     )
         return None
 
@@ -446,7 +454,8 @@ class TradeSetupEngine:
                     f"Targeting high-volume mean reversion to POC (${vp.poc_price:,.2f}) and VAH (${vp.vah_price:,.2f})",
                     f"Stop Loss placed beyond Value Area Low (${sl:,.2f})"
                 ],
-                invalidation_reason=f"Auction acceptance outside Value Area below ${vp.val_price:,.2f}"
+                invalidation_reason=f"Auction acceptance outside Value Area below ${vp.val_price:,.2f}",
+                current_price=current_price,
             )
 
         # Short: Rejection from Value Area High targeting POC & VAL
@@ -480,7 +489,8 @@ class TradeSetupEngine:
                     f"Targeting mean reversion to POC (${vp.poc_price:,.2f}) and VAL (${vp.val_price:,.2f})",
                     f"Stop Loss placed beyond Value Area High (${sl:,.2f})"
                 ],
-                invalidation_reason=f"Auction acceptance outside Value Area above ${vp.vah_price:,.2f}"
+                invalidation_reason=f"Auction acceptance outside Value Area above ${vp.vah_price:,.2f}",
+                current_price=current_price,
             )
         return None
 
@@ -533,7 +543,8 @@ class TradeSetupEngine:
                     f"Breakout above neckline at ${entry:,.2f}",
                     f"Invalidation level anchored at ${sl:,.2f}"
                 ],
-                invalidation_reason=f"Breakdown below {best_pat.name} base invalidation at ${best_pat.invalidation_level:,.2f}"
+                invalidation_reason=f"Breakdown below {best_pat.name} base invalidation at ${best_pat.invalidation_level:,.2f}",
+                current_price=current_price,
             )
 
         elif best_pat.bias in [BiasType.BEARISH, BiasType.STRONG_BEARISH]:
@@ -563,7 +574,8 @@ class TradeSetupEngine:
                     f"Breakdown below neckline at ${entry:,.2f}",
                     f"Invalidation level anchored at ${sl:,.2f}"
                 ],
-                invalidation_reason=f"Breakout above {best_pat.name} top invalidation at ${best_pat.invalidation_level:,.2f}"
+                invalidation_reason=f"Breakout above {best_pat.name} top invalidation at ${best_pat.invalidation_level:,.2f}",
+                current_price=current_price,
             )
         return None
 
@@ -583,6 +595,8 @@ class TradeSetupEngine:
         confidence: int,
         rationale: List[str],
         invalidation_reason: str,
+        current_price: Optional[float] = None,
+        candle: Optional[Dict[str, float]] = None,
     ) -> TradeSetup:
         risk = abs(entry - sl)
         if risk <= 1e-8:
@@ -597,7 +611,30 @@ class TradeSetupEngine:
 
         setup_id = f"SETUP-{uuid.uuid4().hex[:8].upper()}"
 
-        return TradeSetup(
+        # Probability of TP1 & TP2 (higher R:R requires higher barrier to hit)
+        base_prob = confidence * 0.92
+        rr_penalty = max(0.0, (rr_tp1 - 1.0) * 6.0)
+        tp1_probability = int(np.clip(base_prob - rr_penalty, 40, 92))
+        spread_penalty = max(0.0, (rr_tp2 - rr_tp1) * 8.0)
+        tp2_probability = int(np.clip(tp1_probability - spread_penalty, 25, 80))
+
+        # Recommended risk % based on institutional confluence confidence
+        if confidence >= 80:
+            recommended_risk_pct = 2.0
+        elif confidence >= 70:
+            recommended_risk_pct = 1.5
+        elif confidence >= 60:
+            recommended_risk_pct = 1.0
+        else:
+            recommended_risk_pct = 0.5
+
+        # Suggested position size based on standard $10,000 reference portfolio
+        account_size = 10000.0
+        dollar_risk = account_size * (recommended_risk_pct / 100.0)
+        risk_pct_trade = risk / entry if entry > 0 else 0.01
+        position_size_usd = round(min(50000.0, max(100.0, dollar_risk / risk_pct_trade)), 2)
+
+        setup = TradeSetup(
             setup_id=setup_id,
             symbol=symbol,
             timestamp=timestamp,
@@ -613,7 +650,125 @@ class TradeSetupEngine:
             confidence_score=confidence,
             rationale=rationale,
             invalidation_reason=invalidation_reason,
+            tp1_probability=tp1_probability,
+            tp2_probability=tp2_probability,
+            recommended_risk_pct=recommended_risk_pct,
+            position_size_usd=position_size_usd,
         )
+
+        eff_price = current_price if current_price is not None else entry
+        return self.update_execution_state(setup, eff_price, candle)
+
+    def update_execution_state(
+        self,
+        setup: TradeSetup,
+        current_price: float,
+        candle: Optional[Dict[str, float]] = None,
+    ) -> TradeSetup:
+        """
+        Dynamically updates the entry confirmation state machine based on latest live price tick:
+        - Checks distance from current price to entry target.
+        - Emits WAITING_FOR_PRICE (Do Not Chase) when price has not retraced to entry.
+        - Emits CONFIRMED_ENTRY_TRIGGER when price reaches entry zone with candle reaction.
+        - Emits INVALIDATED when price breaches Stop Loss.
+        - Emits TARGET_HIT when price reaches TP1 or TP2.
+        """
+        entry = setup.entry_price
+        sl = setup.stop_loss
+        tp1 = setup.tp1_price
+        tp2 = setup.tp2_price
+        is_long = setup.direction == "LONG"
+
+        dist_pct = ((current_price - entry) / entry) * 100 if entry > 0 else 0.0
+        setup.entry_distance_pct = round(dist_pct, 2)
+
+        # Dynamic entry tolerance: 0.15% of entry price (e.g., $120 on BTC, $0.20 on SOL)
+        tolerance = 0.0015 * entry
+
+        # Candle details if available
+        candle_detail = ""
+        if candle:
+            o = float(candle.get("open", current_price))
+            h = float(candle.get("high", current_price))
+            l = float(candle.get("low", current_price))
+            c = float(candle.get("close", current_price))
+            v = float(candle.get("volume", 0.0))
+            rng = max(1e-8, h - l)
+            if is_long:
+                lower_wick = (min(o, c) - l) / rng
+                is_green = c >= o
+                if lower_wick >= 0.20 or is_green:
+                    candle_detail = " (Bullish wick/bounce reaction confirmed)"
+            else:
+                upper_wick = (h - max(o, c)) / rng
+                is_red = c <= o
+                if upper_wick >= 0.20 or is_red:
+                    candle_detail = " (Bearish wick/rejection reaction confirmed)"
+
+        if is_long:
+            if current_price >= tp2:
+                setup.execution_state = ExecutionState.TARGET_HIT.value
+                setup.entry_action = f"🎯 TARGET 2 REACHED at ${current_price:,.2f}! (+{abs((tp2-entry)/entry)*100:.1f}%) Close 100% position."
+            elif current_price >= tp1:
+                setup.execution_state = ExecutionState.TARGET_HIT.value
+                setup.entry_action = f"🎯 TARGET 1 HIT at ${current_price:,.2f}! Secure 50% profit. Move SL to Breakeven (${entry:,.2f})."
+            elif current_price <= sl:
+                setup.execution_state = ExecutionState.INVALIDATED.value
+                setup.entry_action = f"❌ SETUP INVALIDATED — Price breached Stop Loss (${sl:,.2f}). Capital protected."
+            else:
+                # Between SL and TP1
+                if current_price > entry + tolerance:
+                    diff_val = current_price - entry
+                    setup.execution_state = ExecutionState.WAITING_FOR_PRICE.value
+                    setup.entry_action = (
+                        f"⏳ DO NOT CHASE — Wait for pullback to entry ${entry:,.2f} "
+                        f"(${current_price:,.2f} is +{abs(dist_pct):.2f}% higher / ${diff_val:,.2f} away)"
+                    )
+                elif current_price < entry - tolerance:
+                    setup.execution_state = ExecutionState.IN_ENTRY_ZONE.value
+                    setup.entry_action = (
+                        f"⚠️ IN DISCOUNT ZONE (${current_price:,.2f}) — Watch for bullish rejection "
+                        f"to confirm entry around ${entry:,.2f} (SL: ${sl:,.2f})"
+                    )
+                else:
+                    setup.execution_state = ExecutionState.CONFIRMED_ENTRY_TRIGGER.value
+                    setup.entry_action = (
+                        f"🚨 CONFIRMED ENTRY TRIGGER — Price in entry zone (${current_price:,.2f})! "
+                        f"EXECUTE LONG NOW!{candle_detail} (SL: ${sl:,.2f} | TP1: ${tp1:,.2f})"
+                    )
+        else: # SHORT
+            if current_price <= tp2:
+                setup.execution_state = ExecutionState.TARGET_HIT.value
+                setup.entry_action = f"🎯 TARGET 2 REACHED at ${current_price:,.2f}! (+{abs((entry-tp2)/entry)*100:.1f}%) Close 100% position."
+            elif current_price <= tp1:
+                setup.execution_state = ExecutionState.TARGET_HIT.value
+                setup.entry_action = f"🎯 TARGET 1 HIT at ${current_price:,.2f}! Secure 50% profit. Move SL to Breakeven (${entry:,.2f})."
+            elif current_price >= sl:
+                setup.execution_state = ExecutionState.INVALIDATED.value
+                setup.entry_action = f"❌ SETUP INVALIDATED — Price surged above Stop Loss (${sl:,.2f}). Capital protected."
+            else:
+                # Between SL and TP1
+                if current_price < entry - tolerance:
+                    diff_val = entry - current_price
+                    setup.execution_state = ExecutionState.WAITING_FOR_PRICE.value
+                    setup.entry_action = (
+                        f"⏳ DO NOT CHASE — Wait for rally to entry ${entry:,.2f} "
+                        f"(${current_price:,.2f} is -{abs(dist_pct):.2f}% lower / ${diff_val:,.2f} away)"
+                    )
+                elif current_price > entry + tolerance:
+                    setup.execution_state = ExecutionState.IN_ENTRY_ZONE.value
+                    setup.entry_action = (
+                        f"⚠️ IN PREMIUM ZONE (${current_price:,.2f}) — Watch for bearish rejection "
+                        f"to confirm entry around ${entry:,.2f} (SL: ${sl:,.2f})"
+                    )
+                else:
+                    setup.execution_state = ExecutionState.CONFIRMED_ENTRY_TRIGGER.value
+                    setup.entry_action = (
+                        f"🚨 CONFIRMED ENTRY TRIGGER — Price in entry zone (${current_price:,.2f})! "
+                        f"EXECUTE SHORT NOW!{candle_detail} (SL: ${sl:,.2f} | TP1: ${tp1:,.2f})"
+                    )
+
+        return setup
 
     def _compute_atr(self, df: pd.DataFrame, period: int = 14) -> float:
         """Calculates latest Average True Range."""

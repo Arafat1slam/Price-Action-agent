@@ -207,6 +207,33 @@ def create_trade_setup_card(res: AnalysisResult) -> Panel:
         is_long = setup.direction == "LONG"
         color = "green" if is_long else "red"
 
+        # 1. State Machine Execution Banner
+        state = setup.execution_state
+        if state == "CONFIRMED_ENTRY_TRIGGER":
+            banner_style = "bold black on bright_green"
+            banner_text = f"🚨 CONFIRMED ENTRY TRIGGER — EXECUTE {setup.direction} NOW! 🚨"
+        elif state == "WAITING_FOR_PRICE":
+            banner_style = "bold black on yellow"
+            banner_text = "⏳ DO NOT CHASE — WAITING FOR PULLBACK TO ENTRY ZONE ⏳"
+        elif state == "IN_ENTRY_ZONE":
+            banner_style = "bold white on dark_orange"
+            banner_text = "⚠️ IN ENTRY ZONE — MONITORING CANDLE WICK & VOLUME CONFIRMATION ⚠️"
+        elif state == "INVALIDATED":
+            banner_style = "bold white on red"
+            banner_text = "❌ SETUP INVALIDATED — PRICE BREACHED STOP LOSS ❌"
+        elif state == "TARGET_HIT":
+            banner_style = "bold black on bright_green"
+            banner_text = "🎯 TAKE PROFIT TARGET HIT — SECURE PROFITS & TRAIL STOP 🎯"
+        else:
+            banner_style = "bold white on blue"
+            banner_text = f"ACTIVE SETUP: {state}"
+
+        banner = Table.grid(expand=True)
+        banner.add_column(justify="center")
+        banner.add_row(f"[{banner_style}]  {banner_text}  [/{banner_style}]")
+        banner.add_row(f"[bold white]{setup.entry_action}[/bold white]")
+
+        # 2. Setup Parameters Grid
         grid = Table.grid(expand=True)
         grid.add_column(ratio=1)
         grid.add_column(ratio=1)
@@ -216,27 +243,58 @@ def create_trade_setup_card(res: AnalysisResult) -> Panel:
         tp2_dist = abs(setup.tp2_price - setup.entry_price) / max(1e-8, setup.entry_price) * 100
 
         col1 = (
-            f"[bold white]Setup Type:[/bold white] {setup.setup_type.value} ([bold {color}]{setup.direction}[/bold {color}])\n"
-            f"[bold white]Entry Target:[/bold white] [bold cyan]${setup.entry_price:,.2f}[/bold cyan]\n"
+            f"[bold white]Setup Archetype:[/bold white] {setup.setup_type.value} ([bold {color}]{setup.direction}[/bold {color}])\n"
+            f"[bold white]Entry Target:[/bold white] [bold cyan]${setup.entry_price:,.2f}[/bold cyan] (Current: [white]${res.current_price:,.2f}[/white] | Dist: [yellow]{setup.entry_distance_pct:+.2f}%[/yellow])\n"
             f"[bold white]Stop Loss:[/bold white] [red]${setup.stop_loss:,.2f}[/red] (-{sl_dist:.2f}%)\n"
             f"[bold white]Invalidation:[/bold white] [dim]{setup.invalidation_reason}[/dim]"
         )
 
         col2 = (
-            f"[bold white]Status:[/bold white] [bold green]QUALIFIED (R:R >= 1.80 ENFORCED)[/bold green]\n"
+            f"[bold white]Risk-Reward Ratio:[/bold white] [bold yellow]Effective 1 : {setup.effective_rr:.2f}[/bold yellow] (R:R >= 1.80)\n"
             f"[bold white]Take Profit 1:[/bold white] [green]${setup.tp1_price:,.2f}[/green] (+{tp1_dist:.2f}%) [dim](1:{setup.risk_reward_tp1:.1f})[/dim]\n"
             f"[bold white]Take Profit 2:[/bold white] [bold green]${setup.tp2_price:,.2f}[/bold green] (+{tp2_dist:.2f}%) [dim](1:{setup.risk_reward_tp2:.1f})[/dim]\n"
-            f"[bold white]Effective Blended R:R:[/bold white] [bold yellow]1 : {setup.effective_rr:.2f}[/bold yellow]"
+            f"[bold white]Confluence Bias:[/bold white] [{color}]{setup.confidence_score}% Institutional Conviction[/{color}]"
         )
         grid.add_row(col1, col2)
 
-        track = f"[red][SL ${setup.stop_loss:,.0f}][/red] <---> [cyan][ENTRY ${setup.entry_price:,.0f}][/cyan] --------> [green][TP1 ${setup.tp1_price:,.0f}][/green] ------------> [bold green][TP2 ${setup.tp2_price:,.0f}][/bold green]"
-        return Panel(Group(grid, Text(""), Text.from_markup(track, justify="center")), title=f"[{color}]* ACTIONABLE TRADE SETUP PLAN [{setup.direction}][/{color}]", border_style=color, box=box.ROUNDED)
+        # 3. Probabilities and Position Sizing Sub-Panel
+        tp1_bar = make_progress_bar(setup.tp1_probability, width=10)
+        tp2_bar = make_progress_bar(setup.tp2_probability, width=10)
+
+        prob_grid = Table.grid(expand=True)
+        prob_grid.add_column(ratio=1)
+        prob_grid.add_column(ratio=1)
+        prob_col1 = (
+            f"[bold cyan]🎯 TP1 Hit Probability:[/bold cyan] [bold green]{setup.tp1_probability}%[/bold green] [dim][{tp1_bar}][/dim]\n"
+            f"[bold cyan]🎯 TP2 Hit Probability:[/bold cyan] [bold green]{setup.tp2_probability}%[/bold green] [dim][{tp2_bar}][/dim]"
+        )
+        prob_col2 = (
+            f"[bold yellow]🛡️ Recommended Risk:[/bold yellow] [bold white]{setup.recommended_risk_pct}%[/bold white] [dim]of total equity[/dim]\n"
+            f"[bold yellow]💼 Suggested Size ($10k):[/bold yellow] [bold white]${setup.position_size_usd:,.2f} USD[/bold white]"
+        )
+        prob_grid.add_row(prob_col1, prob_col2)
+
+        track = f"[red][SL ${setup.stop_loss:,.0f}][/red] <---> [cyan][ENTRY ${setup.entry_price:,.0f}][/cyan] --------> [green][TP1 ${setup.tp1_price:,.0f} ({setup.tp1_probability}%)] [/green] ------------> [bold green][TP2 ${setup.tp2_price:,.0f} ({setup.tp2_probability}%)] [/bold green]"
+
+        return Panel(
+            Group(
+                banner,
+                Text(""),
+                grid,
+                Text(""),
+                Panel(prob_grid, title="[bold white]PROBABILITY & RISK SIZING (CAPITAL PROTECTION)[/bold white]", border_style="dim", box=box.ROUNDED),
+                Text(""),
+                Text.from_markup(track, justify="center")
+            ),
+            title=f"[{color}]* ACTIONABLE TRADE SETUP PLAN [{setup.direction}][/{color}]",
+            border_style=color,
+            box=box.ROUNDED
+        )
     else:
         content = (
             "[bold yellow]No trade setup currently passes the strict institutional Effective R:R >= 1.80 filter gate.[/bold yellow]\n"
             f"[dim]Current Price: ${res.current_price:,.2f} | Market Structure: {res.trend_detail} | Confluence: {res.bias} ({res.confidence}%)\n"
-            "Waiting for high-expectancy FVG pullback, Order Block retest, or clean liquidity sweep...[/dim]"
+            "Continuously scanning every candle (Open, High, Low, Close, Volume) waiting for high-expectancy FVG pullback, Order Block retest, or liquidity sweep...[/dim]"
         )
         return Panel(content, title="[yellow]TRADE SETUP PLAN [CAPITAL PRESERVATION MODE][/yellow]", border_style="yellow", box=box.ROUNDED)
 
@@ -265,7 +323,10 @@ def print_single_report(res: AnalysisResult):
         print(f"LEVELS: Support ${res.nearest_support or 0:,.2f} | Resistance ${res.nearest_resistance or 0:,.2f}")
         if res.trade_setup:
             ts = res.trade_setup
-            print(f"SETUP: {ts.direction} {ts.setup_type.value} | Entry: ${ts.entry_price:,.2f} | SL: ${ts.stop_loss:,.2f} | TP1: ${ts.tp1_price:,.2f} | R:R {ts.effective_rr:.2f}")
+            print(f"STATUS: {ts.execution_state} -> {ts.entry_action}")
+            print(f"SETUP: {ts.direction} {ts.setup_type.value} | Entry: ${ts.entry_price:,.2f} | SL: ${ts.stop_loss:,.2f}")
+            print(f"TP1: ${ts.tp1_price:,.2f} (Chance: {ts.tp1_probability}%) | TP2: ${ts.tp2_price:,.2f} (Chance: {ts.tp2_probability}%)")
+            print(f"RISK SIZING: {ts.recommended_risk_pct}% equity | Position: ${ts.position_size_usd:,.2f} | R:R {ts.effective_rr:.2f}")
         print("=" * 70)
 
 
@@ -327,10 +388,27 @@ def run_live_stream(symbol: str, timeframe: str, engine: PriceActionEngine, clie
             if is_c or p_moved >= 0.05 or (now - last_time >= 3.0):
                 res = engine.analyze(symbol, timeframe)
                 if res:
+                    if res.trade_setup:
+                        engine.trade_setup_engine.update_execution_state(
+                            res.trade_setup, current_price=curr_p, candle=candle
+                        )
                     clear_screen()
                     print_single_report(res)
                     if HAS_RICH:
-                        console.print("[dim white]-- Live WebSocket Active | Press Ctrl+C to return to Chat --[/dim white]")
+                        if res.trade_setup and res.trade_setup.execution_state == "CONFIRMED_ENTRY_TRIGGER":
+                            console.print(
+                                Panel(
+                                    f"[bold black on bright_green]  🚨 CONFIRMED ENTRY TRIGGER ACTIVATED!  [/bold black on bright_green]\n\n"
+                                    f"[bold white]Target confirmed at ${curr_p:,.2f}. Execute {res.trade_setup.direction} NOW![/bold white]\n"
+                                    f"[bold yellow]Stop Loss: ${res.trade_setup.stop_loss:,.2f} | TP1: ${res.trade_setup.tp1_price:,.2f} ({res.trade_setup.tp1_probability}%) | Sizing: ${res.trade_setup.position_size_usd:,.2f}[/bold yellow]",
+                                    box=box.HEAVY,
+                                    border_style="bright_green"
+                                )
+                            )
+                        console.print("[dim white]-- Live WebSocket Active | Continuous Candle & Volume Monitor | Press Ctrl+C to return to Chat --[/dim white]")
+                    else:
+                        if res.trade_setup and res.trade_setup.execution_state == "CONFIRMED_ENTRY_TRIGGER":
+                            print(f"\n🚨 CONFIRMED ENTRY TRIGGER ACTIVATED! Execute {res.trade_setup.direction} NOW at ${curr_p:,.2f}!\n")
                     last_p = curr_p
                     last_time = now
         except Exception as e:
@@ -609,34 +687,153 @@ def run_interactive_assistant(default_symbol: str = "BTCUSDT", default_timeframe
 
 
 # ============================================================================
-# Main Entry Point
+# Main Entry Point & Setup Wizard
 # ============================================================================
+
+def prompt_user_startup() -> Tuple[str, str, int]:
+    """
+    Interactive terminal onboarding questionnaire when running via start.bat:
+    1. Market input (e.g. btc, sol, eth, bnb, doge, etc.)
+    2. Trading style:
+       - 1: Scalp (5m LTF - Fast Execution)
+       - 2: Intraday (1h LTF - Day Trading) [Default]
+       - 3: Swing (4h LTF - Multi-Day Position)
+    3. Execution mode:
+       - 1: Continuous Live Auto-Scanner (Real-time candle & confirmation monitor) [Default]
+       - 2: Interactive AI Assistant Cockpit (Chat prompt & commands)
+    """
+    clear_screen()
+    if HAS_RICH:
+        console.print(Panel(
+            "[bold cyan]AI PRICE ACTION ASSISTANT v2.0[/bold cyan] — [bold white]INSTITUTIONAL SETUP WIZARD[/bold white]\n"
+            "[italic white]Configure your scanning session in 2 simple steps.[/italic white]",
+            box=box.ROUNDED,
+            border_style="cyan"
+        ))
+    else:
+        print("=" * 60)
+        print("  AI PRICE ACTION ASSISTANT v2.0 - SETUP WIZARD")
+        print("=" * 60)
+
+    # 1. Market prompt
+    if HAS_RICH:
+        console.print("[bold yellow]Step 1: Market Selection[/bold yellow]")
+        console.print("  Enter any crypto symbol or shorthand (e.g. [bold green]btc[/bold green], [bold green]sol[/bold green], [bold green]eth[/bold green], [bold green]bnb[/bold green], [bold green]doge[/bold green])")
+    else:
+        print("Step 1: Market Selection (e.g. btc, sol, eth, bnb)")
+
+    try:
+        raw_market = input("  👉 Enter market to scan [default: btc]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        raw_market = "btc"
+
+    market = raw_market if raw_market else "btc"
+    resolved_sym = resolve_symbol(market)
+
+    # 2. Trading style prompt
+    if HAS_RICH:
+        console.print("\n[bold yellow]Step 2: Trading Style[/bold yellow]")
+        console.print("  [bold cyan]1[/bold cyan] / [bold white]Scalp[/bold white]    : 5m Timeframe (Fast scalping & high frequency execution)")
+        console.print("  [bold cyan]2[/bold cyan] / [bold white]Intraday[/bold white] : 1h Timeframe (Day trading, balanced institutional confluence) [Default]")
+        console.print("  [bold cyan]3[/bold cyan] / [bold white]Swing[/bold white]    : 4h Timeframe (Multi-day positions, macro structural trends)")
+    else:
+        print("\nStep 2: Trading Style:")
+        print("  1 / Scalp    : 5m Timeframe")
+        print("  2 / Intraday : 1h Timeframe [Default]")
+        print("  3 / Swing    : 4h Timeframe")
+
+    try:
+        raw_style = input("  👉 Enter choice [1/2/3, default: 2]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        raw_style = "2"
+
+    if raw_style in ["1", "scalp", "s"]:
+        timeframe = "5m"
+        style_name = "Scalp (5m)"
+    elif raw_style in ["3", "swing", "sw"]:
+        timeframe = "4h"
+        style_name = "Swing (4h)"
+    else:
+        timeframe = "1h"
+        style_name = "Intraday (1h)"
+
+    # 3. Execution mode prompt
+    if HAS_RICH:
+        console.print("\n[bold yellow]Step 3: Scanner Execution Mode[/bold yellow]")
+        console.print("  [bold cyan]1[/bold cyan] / [bold green]Continuous Live Auto-Scanner[/bold green] (Live tick-by-tick candle & entry trigger monitor) [Default]")
+        console.print("  [bold cyan]2[/bold cyan] / [bold white]Interactive AI Assistant[/bold white]     (Interactive chat prompt & manual commands)")
+    else:
+        print("\nStep 3: Scanner Execution Mode:")
+        print("  1 / Continuous Live Auto-Scanner [Default]")
+        print("  2 / Interactive AI Assistant")
+
+    try:
+        raw_mode = input("  👉 Enter choice [1/2, default: 1]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        raw_mode = "1"
+
+    mode = 2 if raw_mode in ["2", "chat", "interactive", "cockpit"] else 1
+
+    if HAS_RICH:
+        console.print(f"\n[bold green]✓ Session Initialized:[/bold green] [bold cyan]{resolved_sym}[/bold cyan] | Style: [bold white]{style_name}[/bold white] | Mode: [bold yellow]{'Continuous Live Stream' if mode == 1 else 'Interactive AI Assistant'}[/bold yellow]\n")
+    else:
+        print(f"\nSession Initialized: {resolved_sym} | Style: {style_name}\n")
+
+    time.sleep(0.8)
+    return resolved_sym, timeframe, mode
+
 
 def main():
     parser = argparse.ArgumentParser(description="Live Institutional Price Action Scanner & Cockpit v2.0")
-    parser.add_argument("--symbol", type=str, default="BTCUSDT", help="Default trading pair")
-    parser.add_argument("--timeframe", type=str, default=DEFAULT_TIMEFRAME, help="Default candle timeframe")
+    parser.add_argument("--symbol", type=str, default=None, help="Trading pair (e.g. BTCUSDT, SOLUSDT)")
+    parser.add_argument("--timeframe", type=str, default=None, help="Candle timeframe (e.g. 5m, 15m, 1h, 4h)")
     parser.add_argument("--stream", action="store_true", help="Launch directly into real-time streaming view")
     parser.add_argument("--demo", action="store_true", help="Run in single-pass demo mode")
+    parser.add_argument("--no-wizard", action="store_true", help="Skip the startup interactive questionnaire")
     args = parser.parse_args()
 
-    symbol = resolve_symbol(args.symbol)
-    timeframe = args.timeframe.lower() if args.timeframe.lower() in SUPPORTED_TIMEFRAMES else DEFAULT_TIMEFRAME
-
+    # If demo mode requested:
     if args.demo:
+        sym = resolve_symbol(args.symbol or "BTCUSDT")
+        tf = args.timeframe.lower() if args.timeframe and args.timeframe.lower() in SUPPORTED_TIMEFRAMES else DEFAULT_TIMEFRAME
         engine = PriceActionEngine(max_candles=100)
-        client = BinanceClient(symbol=symbol, interval=timeframe)
+        client = BinanceClient(symbol=sym, interval=tf)
         try:
             df = client.fetch_historical_klines(limit=100)
             engine.set_history(df)
-            res = engine.analyze(symbol, timeframe)
+            res = engine.analyze(sym, tf)
             if res:
                 print_single_report(res)
         except Exception as e:
             print(f"Demo error: {e}")
         return
 
+    # If streaming directly requested from CLI:
     if args.stream:
+        sym = resolve_symbol(args.symbol or "BTCUSDT")
+        tf = args.timeframe.lower() if args.timeframe and args.timeframe.lower() in SUPPORTED_TIMEFRAMES else DEFAULT_TIMEFRAME
+        engine = PriceActionEngine(max_candles=DEFAULT_CANDLE_LIMIT)
+        client = BinanceClient(symbol=sym, interval=tf)
+        try:
+            df = client.fetch_historical_klines(limit=150)
+            engine.set_history(df)
+            run_live_stream(sym, tf, engine, client)
+        except Exception as e:
+            print(f"Streaming error: {e}")
+        return
+
+    # If CLI explicitly specifies symbol or requests skipping wizard:
+    if args.symbol or args.no_wizard:
+        sym = resolve_symbol(args.symbol or "BTCUSDT")
+        tf = args.timeframe.lower() if args.timeframe and args.timeframe.lower() in SUPPORTED_TIMEFRAMES else DEFAULT_TIMEFRAME
+        run_interactive_assistant(default_symbol=sym, default_timeframe=tf)
+        return
+
+    # Default flow (e.g. when double clicking start.bat):
+    # Ask interactive questionnaire
+    symbol, timeframe, mode = prompt_user_startup()
+
+    if mode == 1:
         engine = PriceActionEngine(max_candles=DEFAULT_CANDLE_LIMIT)
         client = BinanceClient(symbol=symbol, interval=timeframe)
         try:
@@ -644,11 +841,10 @@ def main():
             engine.set_history(df)
             run_live_stream(symbol, timeframe, engine, client)
         except Exception as e:
-            print(f"Streaming error: {e}")
-        return
-
-    # Default: Launch the Interactive AI Assistant
-    run_interactive_assistant(default_symbol=symbol, default_timeframe=timeframe)
+            logger.error(f"Streaming startup error: {e}")
+            run_interactive_assistant(default_symbol=symbol, default_timeframe=timeframe)
+    else:
+        run_interactive_assistant(default_symbol=symbol, default_timeframe=timeframe)
 
 
 if __name__ == "__main__":
