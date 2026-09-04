@@ -7,7 +7,9 @@ from core.models import (
     BiasType,
     ChartPattern,
     ConfluenceReport,
+    MarketRegime,
     MLInferenceResult,
+    RegimeReport,
     SetupType,
     TradeSetup,
 )
@@ -24,6 +26,7 @@ from engines.indicators_engine import (
 from engines.ml_predictor import MLPredictor
 from engines.confluence_engine import ConfluenceEngine
 from engines.trade_setup_engine import TradeSetupEngine
+from engines.regime_engine import MarketRegimeEngine
 
 @dataclass
 class PatternSignal:
@@ -62,6 +65,7 @@ class AnalysisResult:
     smc_report: Optional[SMCAnalysisReport] = None
     chart_patterns: List[ChartPattern] = field(default_factory=list)
     ml_result: Optional[MLInferenceResult] = None
+    regime_report: Optional[RegimeReport] = None
 
     def to_cli_display(self) -> Dict[str, Any]:
         status_label = "Confirmed closed candle" if self.is_candle_closed else "Live candle forming"
@@ -108,6 +112,7 @@ class PriceActionEngine:
             ml_predictor=self.ml_predictor,
         )
         self.trade_setup_engine = TradeSetupEngine()
+        self.regime_engine = MarketRegimeEngine()
 
     def set_history(self, df: pd.DataFrame, timeframe: str = "1h"):
         """Seed the engine with historical candles for a specific or default timeframe."""
@@ -228,6 +233,7 @@ class PriceActionEngine:
         smc_rep: Optional[SMCAnalysisReport] = None
         chart_pats: List[ChartPattern] = []
         ml_res: Optional[MLInferenceResult] = None
+        regime_rep: Optional[RegimeReport] = None
 
         try:
             confluence_data = self.mtf_buffers if self.mtf_buffers else df
@@ -246,6 +252,7 @@ class PriceActionEngine:
             smc_rep = self.smc_engine.analyze(df)
             chart_pats = self.chart_pattern_engine.detect_all(df)
             ml_res = self.ml_predictor.predict(df)
+            regime_rep = self.regime_engine.detect_regime(df)
         except Exception:
             pass
 
@@ -276,6 +283,7 @@ class PriceActionEngine:
             smc_report=smc_rep,
             chart_patterns=chart_pats,
             ml_result=ml_res,
+            regime_report=regime_rep,
         )
 
     def _detect_patterns(self, curr: pd.Series, prev: pd.Series, is_closed: bool) -> List[PatternSignal]:

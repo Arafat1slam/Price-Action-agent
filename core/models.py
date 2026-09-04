@@ -20,6 +20,27 @@ class SetupType(str, Enum):
     CHART_PATTERN_BREAKOUT = "CHART_PATTERN_BREAKOUT"
     VALUE_AREA_MEAN_REVERSION = "VALUE_AREA_MEAN_REVERSION"
 
+class MarketRegime(str, Enum):
+    TRENDING_BULL = "TRENDING_BULL"
+    TRENDING_BEAR = "TRENDING_BEAR"
+    RANGING = "RANGING"
+    BREAKOUT = "BREAKOUT"
+    HIGH_VOLATILITY_CHOP = "HIGH_VOLATILITY_CHOP"
+
+@dataclass
+class RegimeReport:
+    regime: MarketRegime
+    regime_label: str
+    confidence: int               # 0 - 100%
+    adx: float                    # Average Directional Index (14)
+    plus_di: float                # +DI
+    minus_di: float               # -DI
+    atr_ratio: float              # Current ATR vs 20-period baseline
+    bb_bandwidth_pct: float       # Bollinger Bandwidth %
+    volatility_state: str         # "LOW", "NORMAL", "EXPANDING", "EXTREME"
+    recommended_strategy: str     # Strategic trade guidance
+    key_drivers: List[str] = field(default_factory=list)
+
 @dataclass(frozen=True)
 class Candle:
     timestamp: datetime

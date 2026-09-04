@@ -394,6 +394,12 @@ def build_cockpit_renderable(res: AnalysisResult) -> Group:
     else:
         left_table.add_row("Structure", f"[{color}]{res.bias}[/{color}] - {res.trend_detail}")
 
+    # Market Regime Detection
+    if getattr(res, "regime_report", None):
+        rr = res.regime_report
+        r_col = "green" if "BULL" in rr.regime.value else ("red" if "BEAR" in rr.regime.value else ("magenta" if "BREAKOUT" in rr.regime.value else "yellow"))
+        left_table.add_row("Market Regime", f"[{r_col} bold]{rr.regime_label}[/{r_col} bold] [dim](ADX: {rr.adx:.1f})[/dim]")
+
     # SMC Features (FVG, Order Block, Liquidity Sweeps)
     smc = res.smc_report
     if smc:
