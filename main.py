@@ -15,6 +15,7 @@ import os
 import sys
 import time
 import signal
+import threading
 import argparse
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple, Dict, Any
@@ -53,12 +54,14 @@ try:
     from rich.panel import Panel
     from rich.table import Table
     from rich.text import Text
+    from rich.live import Live
     from rich import box
     HAS_RICH = True
     console = Console()
 except ImportError:
     HAS_RICH = False
     console = None
+    Live = None
 
 import pandas as pd
 from config import (
@@ -355,77 +358,131 @@ def render_text_cockpit(res: AnalysisResult, logs: Optional[List[str]] = None):
     print_single_report(res)
 
 
+def build_cockpit_renderable(res: AnalysisResult) -> Group:
+    """Builds a composite renderable containing all cockpit panels for 100% zero-flicker live rendering."""
+    cards_table = Table.grid(expand=True)
+    cards_table.add_column(ratio=1)
+    cards_table.add_column(ratio=1)
+    cards_table.add_row(create_mtf_panel(res), create_smc_panel(res))
+
+    items = [
+        create_header_panel(res),
+        cards_table,
+        create_srp_panel(res),
+        create_trade_setup_card(res),
+    ]
+
+    if res.trade_setup and res.trade_setup.execution_state == "CONFIRMED_ENTRY_TRIGGER":
+        items.append(
+            Panel(
+                f"[bold black on bright_green]  🚨 CONFIRMED ENTRY TRIGGER ACTIVATED!  [/bold black on bright_green]\n\n"
+                f"[bold white]Target confirmed at ${res.current_price:,.2f}. Execute {res.trade_setup.direction} NOW![/bold white]\n"
+                f"[bold yellow]Stop Loss: ${res.trade_setup.stop_loss:,.2f} | TP1: ${res.trade_setup.tp1_price:,.2f} ({res.trade_setup.tp1_probability}%) | Sizing: ${res.trade_setup.position_size_usd:,.2f}[/bold yellow]",
+                box=box.HEAVY,
+                border_style="bright_green"
+            )
+        )
+
+    footer = Text.from_markup(
+        "[dim white]-- Live WebSocket Active | Zero-Flicker Continuous Monitor | Press Ctrl+C to return to Chat --[/dim white]",
+        justify="center"
+    )
+    items.append(footer)
+    return Group(*items)
+
+
 # ============================================================================
-# Live Streaming Watcher Mode
+# Live Streaming Watcher Mode (100% Zero Flicker)
 # ============================================================================
 
 def run_live_stream(symbol: str, timeframe: str, engine: PriceActionEngine, client: BinanceClient):
-    """Streams live real-time candle updates cleanly."""
-    if HAS_RICH:
-        console.print(Panel(
-            f"[bold green]Starting Live Real-Time Stream for {symbol} ({timeframe})...[/bold green]\n"
-            "[italic white]Listening to Binance Kline WebSocket stream tick-by-tick.[/italic white]\n"
-            "[bold yellow]Press Ctrl+C at any time to exit back to the Interactive Assistant.[/bold yellow]",
-            box=box.ROUNDED,
-            border_style="green"
-        ))
-    else:
-        print(f"Starting Live Real-Time Stream for {symbol} ({timeframe})... Press Ctrl+C to stop.")
+    """
+    Streams live real-time candle updates cleanly with 100% ZERO FLICKER / NO SCREEN BLINKING.
+    Uses Rich Live in-place buffer re-rendering without invoking os.system('cls').
+    """
+    clear_screen()
+    initial_res = engine.analyze(symbol, timeframe)
+    if not initial_res:
+        try:
+            df = client.fetch_historical_klines(limit=100)
+            engine.set_history(df)
+            initial_res = engine.analyze(symbol, timeframe)
+        except Exception:
+            pass
 
-    last_time = 0.0
-    last_p = 0.0
+    last_time = time.time()
+    last_p = initial_res.current_price if initial_res else 0.0
+    latest_candle: Optional[Dict[str, Any]] = None
+    has_update = False
+    update_lock = threading.Lock()
 
     def on_update(candle):
-        nonlocal last_time, last_p
+        nonlocal latest_candle, has_update
         try:
             engine.update_candle(candle)
-            now = time.time()
-            curr_p = candle["close"]
-            is_c = candle.get("is_closed", False)
-
-            # Update on closed candle, or 0.05% price move, or every 3 seconds
-            p_moved = abs(curr_p - last_p) / max(1e-8, last_p) * 100 if last_p > 0 else 0
-            if is_c or p_moved >= 0.05 or (now - last_time >= 3.0):
-                res = engine.analyze(symbol, timeframe)
-                if res:
-                    if res.trade_setup:
-                        engine.trade_setup_engine.update_execution_state(
-                            res.trade_setup, current_price=curr_p, candle=candle
-                        )
-                    clear_screen()
-                    print_single_report(res)
-                    if HAS_RICH:
-                        if res.trade_setup and res.trade_setup.execution_state == "CONFIRMED_ENTRY_TRIGGER":
-                            console.print(
-                                Panel(
-                                    f"[bold black on bright_green]  🚨 CONFIRMED ENTRY TRIGGER ACTIVATED!  [/bold black on bright_green]\n\n"
-                                    f"[bold white]Target confirmed at ${curr_p:,.2f}. Execute {res.trade_setup.direction} NOW![/bold white]\n"
-                                    f"[bold yellow]Stop Loss: ${res.trade_setup.stop_loss:,.2f} | TP1: ${res.trade_setup.tp1_price:,.2f} ({res.trade_setup.tp1_probability}%) | Sizing: ${res.trade_setup.position_size_usd:,.2f}[/bold yellow]",
-                                    box=box.HEAVY,
-                                    border_style="bright_green"
-                                )
-                            )
-                        console.print("[dim white]-- Live WebSocket Active | Continuous Candle & Volume Monitor | Press Ctrl+C to return to Chat --[/dim white]")
-                    else:
-                        if res.trade_setup and res.trade_setup.execution_state == "CONFIRMED_ENTRY_TRIGGER":
-                            print(f"\n🚨 CONFIRMED ENTRY TRIGGER ACTIVATED! Execute {res.trade_setup.direction} NOW at ${curr_p:,.2f}!\n")
-                    last_p = curr_p
-                    last_time = now
+            with update_lock:
+                latest_candle = candle
+                has_update = True
         except Exception as e:
             logger.error(f"Stream update error: {e}")
 
     client.start_stream(on_update=on_update)
 
-    try:
-        while client.is_running:
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        client.stop()
-        clear_screen()
-        if HAS_RICH:
-            console.print("[bold yellow]Exited live stream. Returned to Interactive AI Assistant.[/bold yellow]\n")
-        else:
-            print("\nExited live stream. Returned to Interactive AI Assistant.\n")
+    if HAS_RICH and Live is not None and initial_res:
+        current_renderable = build_cockpit_renderable(initial_res)
+        try:
+            with Live(current_renderable, console=console, refresh_per_second=4, auto_refresh=False) as live:
+                while client.is_running:
+                    now = time.time()
+                    should_refresh = False
+                    candle = None
+                    with update_lock:
+                        if has_update:
+                            should_refresh = True
+                            has_update = False
+                            candle = latest_candle
+
+                    if should_refresh and candle:
+                        curr_p = candle["close"]
+                        is_c = candle.get("is_closed", False)
+                        p_moved = abs(curr_p - last_p) / max(1e-8, last_p) * 100 if last_p > 0 else 0
+                        # Smooth update on closed candle, or 0.02% price move, or every 1.5 seconds
+                        if is_c or p_moved >= 0.02 or (now - last_time >= 1.5):
+                            res = engine.analyze(symbol, timeframe)
+                            if res:
+                                if res.trade_setup:
+                                    engine.trade_setup_engine.update_execution_state(
+                                        res.trade_setup, current_price=curr_p, candle=candle
+                                    )
+                                live.update(build_cockpit_renderable(res), refresh=True)
+                                last_p = curr_p
+                                last_time = now
+                    time.sleep(0.1)
+        except KeyboardInterrupt:
+            pass
+    else:
+        # Fallback non-rich terminal mode (zero cls flicker)
+        if initial_res:
+            print_single_report(initial_res)
+        try:
+            while client.is_running:
+                now = time.time()
+                if has_update and (now - last_time >= 3.0):
+                    res = engine.analyze(symbol, timeframe)
+                    if res:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {symbol} ${res.current_price:,.2f} | Bias: {res.bias} ({res.confidence}%)")
+                        last_time = now
+                    has_update = False
+                time.sleep(0.2)
+        except KeyboardInterrupt:
+            pass
+
+    client.stop()
+    clear_screen()
+    if HAS_RICH:
+        console.print("[bold yellow]Exited live stream. Returned to Interactive AI Assistant.[/bold yellow]\n")
+    else:
+        print("\nExited live stream. Returned to Interactive AI Assistant.\n")
 
 
 # ============================================================================
