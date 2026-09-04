@@ -103,6 +103,9 @@ class VolumeProfileEngine:
                 hvn_prominence_factor=hvn_prominence_factor,
             )
 
+    def compute_profile(self, *args, **kwargs):
+        return self.compute(*args, **kwargs)
+
     def compute(
         self, df: pd.DataFrame, config: Optional[VolumeProfileConfig] = None
     ) -> VolumeProfileResult:
@@ -1002,6 +1005,9 @@ class FibonacciEngine:
             return swing_low_idx, min_l, swing_high_idx, max_h, SwingTrend.UPTREND
         else:
             return swing_high_idx, max_h, swing_low_idx, min_l, SwingTrend.DOWNTREND
+
+    def compute_retracements(self, *args, **kwargs):
+        return self.compute(*args, **kwargs)
 
     def compute(
         self,

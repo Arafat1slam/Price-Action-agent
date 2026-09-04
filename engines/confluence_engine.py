@@ -562,14 +562,14 @@ class ConfluenceEngine:
 
         try:
             # 1. Volume Profile
-            vp_res = self.vp_engine.compute_profile(df)
+            vp_res = self.vp_engine.compute(df)
             vp_zone = VolumeProfileZone(
-                poc_price=round(vp_res.poc_price, 4),
-                vah_price=round(vp_res.vah_price, 4),
-                val_price=round(vp_res.val_price, 4),
-                total_volume=round(vp_res.total_volume, 2),
-                hvn_levels=[round(h, 4) for h in vp_res.hvn_levels],
-                lvn_levels=[round(l, 4) for l in vp_res.lvn_levels],
+                poc_price=round(float(vp_res.poc_price), 4),
+                vah_price=round(float(vp_res.vah_price), 4),
+                val_price=round(float(vp_res.val_price), 4),
+                total_volume=round(float(vp_res.total_volume), 2),
+                hvn_levels=[round(float(h), 4) for h in vp_res.hvn_levels],
+                lvn_levels=[round(float(l), 4) for l in vp_res.lvn_levels],
             )
 
             # Position in Value Area: near VAL is bullish bounce; near VAH is bearish rejection
@@ -604,12 +604,13 @@ class ConfluenceEngine:
                     score -= 0.15
 
             # 3. Fibonacci Golden Pocket
-            fib_res = self.fib_engine.compute_retracements(df)
+            fib_res = self.fib_engine.compute(df)
             if fib_res.golden_pocket_low <= current_price <= fib_res.golden_pocket_high:
-                score += 0.35 if fib_res.direction == "UP" else -0.35
+                is_up = getattr(fib_res.trend, "name", str(fib_res.trend)).upper() in ["UPTREND", "UP"]
+                score += 0.35 if is_up else -0.35
 
-        except Exception:
-            score = 0.0
+        except Exception as e:
+            logger.warning(f"Indicators evaluation warning: {e}")
 
         return float(np.clip(score, -1.0, 1.0)), vp_zone
 
