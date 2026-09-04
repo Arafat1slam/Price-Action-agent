@@ -321,7 +321,7 @@ def create_trade_setup_card(res: AnalysisResult) -> Panel:
         return Panel(content, title="[yellow]TRADE SETUP PLAN [CAPITAL PRESERVATION MODE][/yellow]", border_style="yellow", box=box.ROUNDED)
 
 
-def print_single_report(res: AnalysisResult):
+def print_single_report(res: AnalysisResult, position_manager: Optional[PositionStateManager] = None):
     """Prints a beautiful, clean single analysis report without screen clearing."""
     if HAS_RICH:
         console.print(create_header_panel(res))
@@ -338,6 +338,26 @@ def print_single_report(res: AnalysisResult):
 
         # Actionable Trade Setup Plan card
         console.print(create_trade_setup_card(res))
+
+        # Position Monitor Card if open
+        if position_manager and position_manager.has_open_trade:
+            pos = position_manager.active_position
+            p_col = "green" if pos.direction == "LONG" else "red"
+            pnl_col = "bold green" if pos.current_pnl_pct >= 0 else "bold red"
+            rr_bar = make_progress_bar(min(100, int(pos.current_rr * 33)), width=12)
+            pos_info = (
+                f"[bold white]Active Trade:[/bold white] [{p_col} bold]{pos.direction} {pos.symbol}[/{p_col} bold] | State: [cyan]{pos.state.value}[/cyan]\n"
+                f"[bold white]Entry Target:[/bold white] [cyan]${pos.entry_price:,.2f}[/cyan] | Current Price: [white]${pos.current_price:,.2f}[/white]\n"
+                f"[bold white]Unrealized P&L:[/bold white] [{pnl_col}]{pos.current_pnl_pct:+.2f}%[/{pnl_col}] | Current R:R: [{pnl_col}]{pos.current_rr:+.2f}R[/{pnl_col}] [dim][{rr_bar}][/dim]\n"
+                f"[bold white]Peak R:R Reached:[/bold white] [yellow]{pos.peak_rr:.2f}R[/yellow]"
+            )
+            if pos.reversal_warning:
+                pos_info += (
+                    f"\n\n[bold white on red]  ⚠️ WARNING: EARLY REVERSAL DETECTED!  [/bold white on red]\n"
+                    f"[bold yellow]{pos.reversal_reason}[/bold yellow]\n"
+                    f"[bold white]Consider closing or securing 50% profit (press 2 or type 'close')[/bold white]"
+                )
+            console.print(Panel(pos_info, title=f"[{p_col}]4. LIVE POSITION MONITOR [ACTIVE {pos.direction} TRADE][/{p_col}]", border_style=p_col, box=box.ROUNDED))
     else:
         print("=" * 70)
         print(f"PAIR: {res.symbol} ({res.timeframe.upper()}) | PRICE: ${res.current_price:,.2f} | BIAS: {res.bias} ({res.confidence}%)")
@@ -379,174 +399,295 @@ def render_text_cockpit(res: AnalysisResult, logs: Optional[List[str]] = None):
 
 def build_cockpit_renderable(res: AnalysisResult, position_manager: Optional[PositionStateManager] = None) -> Group:
     """
-    Builds an ultra-compact (~17 line), fixed-height composite cockpit renderable
-    for 100% zero-flicker and zero-scroll live streaming on Windows consoles.
+    Builds a spacious, detailed, and institutional live streaming cockpit.
+    Clear visual hierarchy with no clutter, vibrant color coding, and zero-flicker rendering.
     """
     color = get_bias_color(res.bias)
     status_tag = "[green]CLOSED CANDLE[/green]" if res.is_candle_closed else "[magenta]LIVE FORMING[/magenta]"
+    utc_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
 
-    # 1. Header (3 lines)
+    # 1. Top Header Panel (Spacious, bold, clear)
     header_grid = Table.grid(expand=True)
     header_grid.add_column(ratio=2)
-    header_grid.add_column(ratio=1, justify="right")
-    left_h = f"[bold cyan]{res.symbol}[/bold cyan] ({res.timeframe.upper()}) | Price: [bold white]${res.current_price:,.2f}[/bold white] | Status: {status_tag}"
-    utc_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    right_h = f"Bias: [{color}]{res.bias}[/{color}] ([bold]{res.confidence}%[/bold]) | UTC: [dim]{utc_str}[/dim]"
-    header_grid.add_row(left_h, right_h)
-    header_panel = Panel(header_grid, box=box.ROUNDED, style="cyan")
+    header_grid.add_column(ratio=2, justify="center")
+    header_grid.add_column(ratio=2, justify="right")
 
-    # 2. Left Column: Market Structure & Confluence
-    left_table = Table(box=box.SIMPLE, show_header=False, expand=True, padding=(0, 1))
-    left_table.add_column("Key", style="bold white", width=14)
-    left_table.add_column("Value")
-
-    # Multi-Timeframe Breakdown
-    rep = res.confluence_report
-    if rep and rep.timeframe_breakdown:
-        mtf_items = []
-        for tf in ["4h", "1h", "15m", "5m"]:
-            if tf in rep.timeframe_breakdown:
-                b = rep.timeframe_breakdown[tf].bias.value
-                c = get_bias_color(rep.timeframe_breakdown[tf].bias)
-                mtf_items.append(f"{tf.upper()}: [{c}]{b}[/{c}]")
-        left_table.add_row("MTF (4h/1h/15m/5m)", " | ".join(mtf_items))
-    else:
-        left_table.add_row("Structure", f"[{color}]{res.bias}[/{color}] - {res.trend_detail}")
-
-    # Market Regime Detection
+    left_h = f"[bold cyan]{res.symbol}[/bold cyan] ({res.timeframe.upper()}) | Live Price: [bold white]${res.current_price:,.2f}[/bold white] | {status_tag}"
+    
+    rr_text = ""
     if getattr(res, "regime_report", None):
         rr = res.regime_report
         r_col = "green" if "BULL" in rr.regime.value else ("red" if "BEAR" in rr.regime.value else ("magenta" if "BREAKOUT" in rr.regime.value else "yellow"))
-        left_table.add_row("Market Regime", f"[{r_col} bold]{rr.regime_label}[/{r_col} bold] [dim](ADX: {rr.adx:.1f})[/dim]")
+        rr_text = f"Regime: [{r_col} bold]{rr.regime_label}[/{r_col} bold] [dim](ADX: {rr.adx:.1f})[/dim]"
+    
+    right_h = f"Bias: [{color}]{res.bias}[/{color}] ([bold]{res.confidence}%[/bold]) | UTC: [dim]{utc_str}[/dim]"
+    header_grid.add_row(left_h, rr_text, right_h)
+    header_panel = Panel(header_grid, box=box.ROUNDED, style="cyan")
 
-    # SMC Features (FVG, Order Block, Liquidity Sweeps)
+    # 2. Row 1: Left = Market Structure & Confluence, Right = SMC & Key Levels
+    left_table = Table(box=box.SIMPLE, show_header=False, expand=True, padding=(0, 1))
+    left_table.add_column("Key", style="bold white", width=16)
+    left_table.add_column("Value")
+
+    # MTF breakdown
+    rep = res.confluence_report
+    if rep and rep.timeframe_breakdown:
+        for tf in ["4h", "1h", "15m", "5m"]:
+            if tf in rep.timeframe_breakdown:
+                tf_conf = rep.timeframe_breakdown[tf]
+                c = get_bias_color(tf_conf.bias.value)
+                left_table.add_row(f"{tf.upper()} Confluence", f"[{c}]{tf_conf.bias.value}[/{c}]")
+    else:
+        left_table.add_row("Trend Structure", f"{res.trend_detail}")
+
+    gauge = make_progress_bar(res.confidence, width=12)
+    left_table.add_row("Confluence Score", f"[{color}]{res.confidence}% Institutional Alignment[/{color}] [dim][{gauge}][/dim]")
+
+    if getattr(res, "regime_report", None):
+        rr = res.regime_report
+        left_table.add_row("Tactical Strategy", f"[dim]{rr.recommended_strategy}[/dim]")
+
+    if res.ml_result:
+        ml = res.ml_result
+        p_str = f"[green]Bull {ml.prob_bullish*100:.0f}%[/green] | [red]Bear {ml.prob_bearish*100:.0f}%[/red] | [yellow]Neu {ml.prob_neutral*100:.0f}%[/yellow] (Edge: +{ml.model_confidence*100:.0f}%)"
+        left_table.add_row("ML Radar", p_str)
+
+    left_panel = Panel(left_table, title="[bold cyan]1. MARKET STRUCTURE & CONFLUENCE[/bold cyan]", border_style="cyan", box=box.ROUNDED)
+
+    # Right panel: SMC Footprint & S/R Levels
+    right_smc_table = Table(box=box.SIMPLE, show_header=False, expand=True, padding=(0, 1))
+    right_smc_table.add_column("Key", style="bold white", width=16)
+    right_smc_table.add_column("Value")
+
     smc = res.smc_report
     if smc:
         active_fvgs = getattr(smc, "active_bullish_fvgs", []) + getattr(smc, "active_bearish_fvgs", [])
         if active_fvgs:
             f = active_fvgs[0]
             fc = "green" if getattr(f, "bias", BiasType.BULLISH) == BiasType.BULLISH else "red"
-            left_table.add_row("Active FVG", f"[{fc}]${f.bottom:,.0f} - ${f.top:,.0f} (CE: ${f.midpoint:,.0f})[/{fc}]")
+            right_smc_table.add_row("Active FVG", f"[{fc}]${f.bottom:,.2f} - ${f.top:,.2f}[/{fc}] (CE: ${f.midpoint:,.2f})")
         else:
-            left_table.add_row("Active FVG", "[dim]None active[/dim]")
+            right_smc_table.add_row("Active FVG", "[dim]None active[/dim]")
 
         active_obs = getattr(smc, "active_bullish_obs", []) + getattr(smc, "active_bearish_obs", [])
         if active_obs:
             ob = active_obs[0]
             oc = "green" if getattr(ob, "bias", BiasType.BULLISH) == BiasType.BULLISH else "red"
             stag = "Breaker" if getattr(ob, "is_breaker", False) else "Fresh"
-            left_table.add_row("Order Block", f"[{oc}]${ob.bottom:,.0f} - ${ob.top:,.0f} ({stag})[/{oc}]")
+            right_smc_table.add_row("Order Block", f"[{oc}]${ob.bottom:,.2f} - ${ob.top:,.2f}[/{oc}] ({stag})")
         else:
-            left_table.add_row("Order Block", "[dim]None active[/dim]")
+            right_smc_table.add_row("Order Block", "[dim]None active[/dim]")
 
         sweeps = getattr(smc, "recent_sweeps", [])
         if sweeps:
             sw = sweeps[-1]
             sc = "green" if getattr(sw, "bias", BiasType.BULLISH) == BiasType.BULLISH else "red"
-            left_table.add_row("Liquidity", f"[{sc}]{sw.sweep_type.value} (${sw.sweep_level:,.0f})[/{sc}]")
+            right_smc_table.add_row("Liquidity Sweep", f"[{sc}]{sw.sweep_type.value} (${sw.sweep_level:,.2f})[/{sc}]")
+        else:
+            right_smc_table.add_row("Liquidity Sweep", "[dim]No recent sweep[/dim]")
 
-    # S/R Channels & Volume State
-    res_str = f"${res.nearest_resistance:,.2f}" if res.nearest_resistance else "N/A"
-    sup_str = f"${res.nearest_support:,.2f}" if res.nearest_support else "N/A"
-    left_table.add_row("S/R Channels", f"[red]Res: {res_str}[/red] | [green]Sup: {sup_str}[/green]")
-    left_table.add_row("Volume / Mom", f"{res.volume_state} | Mom: {res.momentum_streak}b")
+        if smc.recent_structure_events:
+            ev = smc.recent_structure_events[-1]
+            ec = "green" if "BULLISH" in ev.event_type.value else "red"
+            right_smc_table.add_row("Structure Event", f"[{ec}]{ev.event_type.value} (${ev.broken_level:,.2f})[/{ec}]")
+        else:
+            right_smc_table.add_row("Structure Trend", f"{res.trend}")
+    else:
+        right_smc_table.add_row("Structure Trend", f"{res.trend_detail}")
 
-    # ML Radar Probabilities
-    if res.ml_result:
-        ml = res.ml_result
-        p_str = f"[green]Bull {ml.prob_bullish*100:.0f}%[/green] | [red]Bear {ml.prob_bearish*100:.0f}%[/red] | [yellow]Neu {ml.prob_neutral*100:.0f}%[/yellow]"
-        left_table.add_row("ML Radar", p_str)
+    res_str = f"[red]${res.nearest_resistance:,.2f}[/red]" if res.nearest_resistance else "N/A"
+    sup_str = f"[green]${res.nearest_support:,.2f}[/green]" if res.nearest_support else "N/A"
+    right_smc_table.add_row("Key S/R Channels", f"Res: {res_str} | Sup: {sup_str}")
+    right_smc_table.add_row("Volume State", f"{res.volume_state} | Momentum: {res.momentum_streak} bars")
 
-    left_panel = Panel(left_table, title="[bold cyan]1. MARKET STRUCTURE & CONFLUENCE[/bold cyan]", border_style="cyan", box=box.ROUNDED)
+    right_smc_panel = Panel(right_smc_table, title="[bold magenta]2. SMART MONEY FOOTPRINT & S/R[/bold magenta]", border_style="magenta", box=box.ROUNDED)
 
-    # 3. Right Column: Actionable Trade Setup Plan
+    row1_grid = Table.grid(expand=True)
+    row1_grid.add_column(ratio=1)
+    row1_grid.add_column(ratio=1)
+    row1_grid.add_row(left_panel, right_smc_panel)
+
+    # 3. Row 2: Actionable Trade Setup Plan (Detailed, spacious, beautiful!)
     setup = res.trade_setup
     if setup:
         s_color = "green" if setup.direction == "LONG" else "red"
-        right_table = Table(box=box.SIMPLE, show_header=False, expand=True, padding=(0, 1))
-        right_table.add_column("Key", style="bold white", width=14)
-        right_table.add_column("Value")
 
-        # Dynamic State Machine Execution Banner
-        if setup.execution_state == "CONFIRMED_ENTRY_TRIGGER":
+        # Execution state banner
+        state = setup.execution_state
+        if state == "CONFIRMED_ENTRY_TRIGGER":
             b_style = "bold black on bright_green"
-            b_text = f" 🚨 CONFIRMED ENTRY: EXECUTE {setup.direction} NOW! 🚨 "
-        elif setup.execution_state == "WAITING_FOR_PRICE":
+            b_text = f"  🚨 CONFIRMED ENTRY TRIGGER — EXECUTE {setup.direction} NOW!  "
+        elif state == "WAITING_FOR_PRICE":
             b_style = "bold black on yellow"
-            b_text = " ⏳ DO NOT CHASE — WAITING FOR RETRACEMENT ⏳ "
-        elif setup.execution_state == "TARGET_HIT":
-            b_style = "bold black on bright_green"
-            b_text = " 🎯 TARGET HIT — SCALE OUT & SECURE PROFITS 🎯 "
-        elif setup.execution_state == "INVALIDATED":
-            b_style = "bold white on red"
-            b_text = " ❌ SETUP INVALIDATED — PRICE HIT STOP LOSS ❌ "
-        else:
+            b_text = "  ⏳ DO NOT CHASE — WAITING FOR PULLBACK TO ENTRY ZONE  "
+        elif state == "IN_ENTRY_ZONE":
             b_style = "bold white on dark_orange"
-            b_text = " ⚠️ IN ENTRY ZONE — CONFIRMING REACTION ⚠️ "
+            b_text = "  ⚠️ IN ENTRY ZONE — MONITORING CANDLE REACTION & VOLUME CONFIRMATION  "
+        elif state == "INVALIDATED":
+            b_style = "bold white on red"
+            b_text = "  ❌ SETUP INVALIDATED — PRICE BREACHED STOP LOSS  "
+        elif state == "TARGET_HIT":
+            b_style = "bold black on bright_green"
+            b_text = "  🎯 TAKE PROFIT TARGET HIT — SECURE PROFITS & TRAIL STOP  "
+        else:
+            b_style = "bold white on blue"
+            b_text = f"  ACTIVE SETUP: {state}  "
 
-        right_table.add_row("Execution", f"[{b_style}]{b_text}[/{b_style}]")
-        right_table.add_row("Setup Plan", f"[bold {s_color}]{setup.direction}[/bold {s_color}] {setup.setup_type.value} | Effective R:R [yellow]1:{setup.effective_rr:.2f}[/yellow]")
-        right_table.add_row("Entry Target", f"[bold cyan]${setup.entry_price:,.2f}[/bold cyan] (Dist: [yellow]{setup.entry_distance_pct:+.2f}%[/yellow])")
-        right_table.add_row("Stop Loss", f"[red]${setup.stop_loss:,.2f}[/red]")
-        right_table.add_row("Take Profits", f"[green]TP1: ${setup.tp1_price:,.2f}[/green] | [bold green]TP2: ${setup.tp2_price:,.2f}[/bold green]")
-        right_table.add_row("Hit Chance", f"[bold cyan]TP1: {setup.tp1_probability}%[/bold cyan] | [bold cyan]TP2: {setup.tp2_probability}%[/bold cyan]")
+        banner_grid = Table.grid(expand=True)
+        banner_grid.add_column(justify="center")
+        banner_grid.add_row(f"[{b_style}]{b_text}[/{b_style}]")
+        banner_grid.add_row(f"[bold white]{setup.entry_action}[/bold white]")
 
-        # Quality Score Display
+        # Setup parameters grid
+        setup_grid = Table.grid(expand=True)
+        setup_grid.add_column(ratio=1)
+        setup_grid.add_column(ratio=1)
+
+        sl_dist = abs(setup.stop_loss - setup.entry_price) / max(1e-8, setup.entry_price) * 100
+        tp1_dist = abs(setup.tp1_price - setup.entry_price) / max(1e-8, setup.entry_price) * 100
+        tp2_dist = abs(setup.tp2_price - setup.entry_price) / max(1e-8, setup.entry_price) * 100
+
+        col1 = (
+            f"[bold white]Setup Archetype:[/bold white] {setup.setup_type.value} ([bold {s_color}]{setup.direction}[/bold {s_color}])\n"
+            f"[bold white]Entry Target:[/bold white] [bold cyan]${setup.entry_price:,.2f}[/bold cyan] (Current: [white]${res.current_price:,.2f}[/white] | Gap: [yellow]{setup.entry_distance_pct:+.2f}%[/yellow])\n"
+            f"[bold white]Stop Loss:[/bold white] [red]${setup.stop_loss:,.2f}[/red] (-{sl_dist:.2f}% risk)\n"
+            f"[bold white]Invalidation:[/bold white] [dim]{setup.invalidation_reason}[/dim]"
+        )
+
+        col2 = (
+            f"[bold white]Risk-Reward Ratio:[/bold white] [bold yellow]Effective 1 : {setup.effective_rr:.2f}[/bold yellow] (Enforced R:R >= 1.80)\n"
+            f"[bold white]Take Profit 1:[/bold white] [green]${setup.tp1_price:,.2f}[/green] (+{tp1_dist:.2f}%) [dim](1:{setup.risk_reward_tp1:.1f})[/dim]\n"
+            f"[bold white]Take Profit 2:[/bold white] [bold green]${setup.tp2_price:,.2f}[/bold green] (+{tp2_dist:.2f}%) [dim](1:{setup.risk_reward_tp2:.1f})[/dim]\n"
+            f"[bold white]Confluence Bias:[/bold white] [{s_color}]{setup.confidence_score}% Institutional Conviction[/{s_color}]"
+        )
+        setup_grid.add_row(col1, col2)
+
+        # Probabilities & Quality Score Sub-grid
+        tp1_bar = make_progress_bar(setup.tp1_probability, width=10)
+        tp2_bar = make_progress_bar(setup.tp2_probability, width=10)
+
+        prob_grid = Table.grid(expand=True)
+        prob_grid.add_column(ratio=1)
+        prob_grid.add_column(ratio=1)
+
         qs = setup.quality_score
         if qs:
             g_col = "bold green" if qs.grade in (QualityGrade.A_PLUS, QualityGrade.A) else ("bold yellow" if qs.grade == QualityGrade.B else "bold red")
             q_bar = make_progress_bar(int(qs.raw_score), width=10)
-            right_table.add_row("Quality Score", f"[{g_col}]{qs.grade.value} ({qs.raw_score:.0f}/100)[/{g_col}] [dim][{q_bar}][/dim]")
+            q_str = f"[{g_col}]Grade {qs.grade.value} ({qs.raw_score:.0f}/100)[/{g_col}] [dim][{q_bar}][/dim]\n[dim]SMC: {qs.smc_score:.0f} | Vol: {qs.volume_score:.0f} | Struct: {qs.structure_score:.0f} | MTF: {qs.mtf_score:.0f} | ML: {qs.ml_score:.0f}[/dim]"
+        else:
+            q_str = "[dim]Calculating...[/dim]"
 
-        right_table.add_row("Risk & Size", f"[yellow]Risk: {setup.recommended_risk_pct}%[/yellow] | Size ($10k): [white]${setup.position_size_usd:,.2f}[/white]")
-        right_panel = Panel(right_table, title=f"[{s_color}]2. ACTIONABLE TRADE SETUP [{setup.direction}][/{s_color}]", border_style=s_color, box=box.ROUNDED)
-    else:
-        right_content = (
-            "\n[bold yellow]No trade setup currently passes strict R:R >= 1.80 filter.[/bold yellow]\n\n"
-            f"[dim]Current Price: ${res.current_price:,.2f} | Confluence: {res.bias} ({res.confidence}%)\n"
-            "Monitoring incoming candles waiting for high-expectancy FVG / OB retest...[/dim]\n"
+        ev_val = setup.effective_rr * (setup.tp1_probability / 100.0) - (1.0 - setup.tp1_probability / 100.0)
+        prob_col1 = (
+            f"[bold cyan]🎯 TP1 Hit Probability:[/bold cyan] [bold green]{setup.tp1_probability}%[/bold green] [dim][{tp1_bar}][/dim]\n"
+            f"[bold cyan]🎯 TP2 Hit Probability:[/bold cyan] [bold green]{setup.tp2_probability}%[/bold green] [dim][{tp2_bar}][/dim]\n"
+            f"[bold yellow]🏆 Trade Quality Score:[/bold yellow] {q_str}"
         )
-        right_panel = Panel(right_content, title="[yellow]2. TRADE SETUP [CAPITAL PRESERVATION][/yellow]", border_style="yellow", box=box.ROUNDED)
+        prob_col2 = (
+            f"[bold yellow]🛡️ Recommended Risk:[/bold yellow] [bold white]{setup.recommended_risk_pct}%[/bold white] [dim]of total equity[/dim]\n"
+            f"[bold yellow]💼 Suggested Size ($10k):[/bold yellow] [bold white]${setup.position_size_usd:,.2f} USD[/bold white]\n"
+            f"[bold cyan]📊 Expected Value (EV):[/bold cyan] [bold green]+{ev_val:.2f}R positive expectancy[/bold green]"
+        )
+        prob_grid.add_row(prob_col1, prob_col2)
 
-    body_grid = Table.grid(expand=True)
-    body_grid.add_column(ratio=1)
-    body_grid.add_column(ratio=1)
-    body_grid.add_row(left_panel, right_panel)
+        # Visual track
+        track = f"[red][SL ${setup.stop_loss:,.0f}][/red] <─── {sl_dist:.1f}% ───> [cyan][ENTRY ${setup.entry_price:,.0f}][/cyan] ────── +{tp1_dist:.1f}% ──────> [green][TP1 ${setup.tp1_price:,.0f} ({setup.tp1_probability}%)] [/green] ────── +{tp2_dist:.1f}% ──────> [bold green][TP2 ${setup.tp2_price:,.0f} ({setup.tp2_probability}%)] [/bold green]"
 
-    # Position State Panel (Phase 6)
-    position_elements = []
+        trade_panel = Panel(
+            Group(
+                banner_grid,
+                Text(""),
+                setup_grid,
+                Text(""),
+                Panel(prob_grid, title="[bold white]PROBABILITY & RISK SIZING (CAPITAL PROTECTION)[/bold white]", border_style="dim", box=box.ROUNDED),
+                Text(""),
+                Text.from_markup(track, justify="center")
+            ),
+            title=f"[{s_color}]* 3. ACTIONABLE INSTITUTIONAL TRADE SETUP PLAN [{setup.direction}][/{s_color}]",
+            border_style=s_color,
+            box=box.ROUNDED
+        )
+    else:
+        content = (
+            "[bold yellow]No trade setup currently passes strict institutional Effective R:R >= 1.80 filter gate.[/bold yellow]\n"
+            f"[dim]Current Price: ${res.current_price:,.2f} | Market Structure: {res.trend_detail} | Confluence: {res.bias} ({res.confidence}%)\n"
+            "Continuously scanning every candle (Open, High, Low, Close, Volume) waiting for high-expectancy FVG pullback, Order Block retest, or liquidity sweep...[/dim]"
+        )
+        trade_panel = Panel(content, title="[yellow]3. TRADE SETUP PLAN [CAPITAL PRESERVATION MODE][/yellow]", border_style="yellow", box=box.ROUNDED)
+
+    # 4. Row 3: Position State Awareness & Interactive Actions (Phase 6)
+    pos_items = []
     if position_manager and position_manager.has_open_trade:
         pos = position_manager.active_position
         p_col = "green" if pos.direction == "LONG" else "red"
-        pnl_col = "green" if pos.current_pnl_pct >= 0 else "red"
-        rr_bar = make_progress_bar(min(100, int(pos.current_rr * 33)), width=8)
-        pos_text = (
-            f"[{p_col} bold]{pos.direction}[/{p_col} bold] {pos.symbol} | "
-            f"Entry: [cyan]${pos.entry_price:,.2f}[/cyan] | "
-            f"P&L: [{pnl_col}]{pos.current_pnl_pct:+.2f}%[/{pnl_col}] | "
-            f"R:R: [{pnl_col}]{pos.current_rr:.2f}R[/{pnl_col}] [dim][{rr_bar}][/dim] | "
-            f"Peak: {pos.peak_rr:.2f}R"
-        )
+        pnl_col = "bold green" if pos.current_pnl_pct >= 0 else "bold red"
+        rr_bar = make_progress_bar(min(100, int(pos.current_rr * 33)), width=12)
 
+        # Early Reversal Warning Banner (Prominent!)
         if pos.reversal_warning:
-            warn_banner = Panel(
-                f"[bold white on red]  ⚠️ WARNING: EARLY REVERSAL DETECTED — CONSIDER CLOSING/SECURING PROFIT  [/bold white on red]\n"
-                f"[bold yellow]{pos.reversal_reason}[/bold yellow]",
+            warn_panel = Panel(
+                f"[bold white on red]  ⚠️ WARNING: EARLY REVERSAL DETECTED AT {pos.current_rr:.2f}R PROFIT!  [/bold white on red]\n"
+                f"[bold yellow]{pos.reversal_reason}[/bold yellow]\n"
+                f"[bold white]Recommendation: Secure 50% profit or press [2] to close trade now before profit evaporates![/bold white]",
+                title="[bold red]EARLY REVERSAL WARNING[/bold red]",
                 border_style="red",
-                box=box.ROUNDED,
+                box=box.HEAVY,
             )
-            position_elements.append(warn_banner)
+            pos_items.append(warn_panel)
 
-        position_elements.append(
-            Panel(pos_text, title=f"[{p_col}]3. OPEN POSITION MONITOR[/{p_col}]", border_style=p_col, box=box.ROUNDED)
+        pos_grid = Table.grid(expand=True)
+        pos_grid.add_column(ratio=1)
+        pos_grid.add_column(ratio=1)
+
+        p_left = (
+            f"[bold white]Active Trade:[/bold white] [{p_col} bold]{pos.direction} {pos.symbol}[/{p_col} bold] | State: [cyan]{pos.state.value}[/cyan]\n"
+            f"[bold white]Entry Price:[/bold white] [cyan]${pos.entry_price:,.2f}[/cyan] | Current: [white]${pos.current_price:,.2f}[/white]"
         )
+        p_right = (
+            f"[bold white]Unrealized P&L:[/bold white] [{pnl_col}]{pos.current_pnl_pct:+.2f}%[/{pnl_col}] | Current R:R: [{pnl_col}]{pos.current_rr:+.2f}R[/{pnl_col}] [dim][{rr_bar}][/dim]\n"
+            f"[bold white]Peak R:R Reached:[/bold white] [yellow]{pos.peak_rr:.2f}R[/yellow] | Action: [bold cyan]Press [2] to Close Trade[/bold cyan]"
+        )
+        pos_grid.add_row(p_left, p_right)
+
+        pos_panel = Panel(
+            pos_grid,
+            title=f"[{p_col} bold]4. LIVE POSITION MONITOR [ACTIVE {pos.direction} TRADE][/{p_col} bold]",
+            border_style=p_col,
+            box=box.ROUNDED
+        )
+        pos_items.append(pos_panel)
+    else:
+        # Flat state with interactive prompts
+        flat_grid = Table.grid(expand=True)
+        flat_grid.add_column(ratio=2)
+        flat_grid.add_column(ratio=1, justify="right")
+
+        if setup and setup.execution_state in ("CONFIRMED_ENTRY_TRIGGER", "IN_ENTRY_ZONE"):
+            prompt_text = f"[bold green]👉 Trade Signal Ready![/bold green] Press [bold cyan][1][/bold cyan] to [bold green]TAKE TRADE[/bold green] (Monitor Position) | Press [bold yellow][2][/bold yellow] to Dismiss"
+        elif setup:
+            prompt_text = f"[yellow]⏳ Setup Pending retracement to ${setup.entry_price:,.2f}.[/yellow] Press [bold cyan][1][/bold cyan] to Pre-Take Trade | Whipsaw protection ACTIVE"
+        else:
+            prompt_text = "[dim]No open position. Capital 100% preserved. Scanning for next A+ institutional setup...[/dim]"
+
+        flat_grid.add_row(
+            f"[bold white]Position State:[/bold white] [cyan]FLAT (No Open Trade)[/cyan] | {prompt_text}",
+            "[dim]Whipsaw Filter: ON[/dim]"
+        )
+        pos_panel = Panel(
+            flat_grid,
+            title="[bold cyan]4. POSITION & EXECUTION CONTROLS[/bold cyan]",
+            border_style="cyan",
+            box=box.ROUNDED
+        )
+        pos_items.append(pos_panel)
 
     footer = Text.from_markup(
-        "[dim white]-- Live WebSocket Active | In-Place Fixed Cockpit (No Blink, No Scroll) | Press Ctrl+C to return to Chat --[/dim white]",
+        "[dim white]-- Controls: [bold cyan]1[/bold cyan]=Take Trade | [bold yellow]2[/bold yellow]=Close Trade | [bold red]Ctrl+C[/bold red]=Exit to Chat | Live Streaming WebSocket Active (No Blink, No Scroll) --[/dim white]",
         justify="center"
     )
 
-    return Group(header_panel, body_grid, *position_elements, footer)
+    return Group(header_panel, row1_grid, trade_panel, *pos_items, footer)
 
 
 # ============================================================================
@@ -590,14 +731,37 @@ def run_live_stream(symbol: str, timeframe: str, engine: PriceActionEngine, clie
 
     client.start_stream(on_update=on_update)
 
+    position_manager = PositionStateManager()
+
     if HAS_RICH and Live is not None and initial_res:
-        current_renderable = build_cockpit_renderable(initial_res)
+        current_renderable = build_cockpit_renderable(initial_res, position_manager)
         try:
-            with Live(current_renderable, console=console, screen=True, auto_refresh=False, vertical_overflow="crop") as live:
+            with Live(current_renderable, console=console, screen=True, auto_refresh=False, vertical_overflow="visible") as live:
+                res = initial_res
                 while client.is_running:
                     now = time.time()
                     should_refresh = False
                     candle = None
+
+                    # Non-blocking interactive keyboard controls (Windows msvcrt)
+                    if os.name == "nt":
+                        try:
+                            import msvcrt
+                            while msvcrt.kbhit():
+                                ch = msvcrt.getch().decode("utf-8", errors="ignore")
+                                if ch == "1":
+                                    if res and res.trade_setup and position_manager.is_flat:
+                                        position_manager.open_position(res.trade_setup, current_price=last_p)
+                                        live.update(build_cockpit_renderable(res, position_manager), refresh=True)
+                                elif ch == "2":
+                                    if position_manager.has_open_trade:
+                                        position_manager.close_position("Manual close via key [2]")
+                                        live.update(build_cockpit_renderable(res, position_manager), refresh=True)
+                                elif ch in ["q", "Q", "\x03"]:
+                                    raise KeyboardInterrupt
+                        except Exception:
+                            pass
+
                     with update_lock:
                         if has_update:
                             should_refresh = True
@@ -608,18 +772,29 @@ def run_live_stream(symbol: str, timeframe: str, engine: PriceActionEngine, clie
                         curr_p = candle["close"]
                         is_c = candle.get("is_closed", False)
                         p_moved = abs(curr_p - last_p) / max(1e-8, last_p) * 100 if last_p > 0 else 0
+
+                        # Update open position state on every tick
+                        if position_manager.has_open_trade:
+                            position_manager.update_position(curr_p, candle=candle)
+
                         # Smooth update on closed candle, or 0.02% price move, or every 1.5 seconds
                         if is_c or p_moved >= 0.02 or (now - last_time >= 1.5):
-                            res = engine.analyze(symbol, timeframe)
-                            if res:
+                            new_res = engine.analyze(symbol, timeframe)
+                            if new_res:
+                                res = new_res
+                                # Whipsaw prevention: if trade is open, suppress opposite signal
+                                if res.trade_setup and position_manager.has_open_trade:
+                                    if position_manager.should_suppress_signal(res.trade_setup.direction):
+                                        res.trade_setup = None
+
                                 if res.trade_setup:
                                     engine.trade_setup_engine.update_execution_state(
                                         res.trade_setup, current_price=curr_p, candle=candle
                                     )
-                                live.update(build_cockpit_renderable(res), refresh=True)
+                                live.update(build_cockpit_renderable(res, position_manager), refresh=True)
                                 last_p = curr_p
                                 last_time = now
-                    time.sleep(0.1)
+                    time.sleep(0.05)
         except KeyboardInterrupt:
             pass
     else:
@@ -667,25 +842,29 @@ def run_interactive_assistant(default_symbol: str = "BTCUSDT", default_timeframe
             "  * Type any coin name to analyze: [bold yellow]btc[/bold yellow], [bold yellow]eth[/bold yellow], [bold yellow]sol[/bold yellow], [bold yellow]bnb[/bold yellow], [bold yellow]doge[/bold yellow], [bold yellow]ada[/bold yellow]\n"
             "  * [bold cyan]stream[/bold cyan] or [bold cyan]live[/bold cyan]     : Launch persistent real-time streaming cockpit\n"
             "  * [bold cyan]setup[/bold cyan] or [bold cyan]signal[/bold cyan]    : View active institutional trade setup plan\n"
-            "  * [bold cyan]smc[/bold cyan]                : Show Smart Money Concepts details (FVG, OB, Sweeps)\n"
-            "  * [bold cyan]levels[/bold cyan]             : View Support, Resistance & Volume Profile (POC/VAH/VAL)\n"
-            "  * [bold cyan]ml[/bold cyan]                 : View Machine Learning prediction & probability breakdown\n"
-            "  * [bold cyan]tf <15m|1h|4h|1d>[/bold cyan]  : Switch active timeframe (e.g. 'tf 15m')\n"
-            "  * [bold cyan]backtest[/bold cyan]           : Run rapid strategy backtest benchmark\n"
-            "  * [bold cyan]help[/bold cyan]               : Show instructions\n"
-            "  * [bold cyan]exit[/bold cyan] or [bold cyan]quit[/bold cyan]       : Close application",
+            "  * [bold cyan]1[/bold cyan] or [bold cyan]take[/bold cyan]            : Execute / Track active trade setup\n"
+            "  * [bold cyan]2[/bold cyan] or [bold cyan]close[/bold cyan]           : Close active position (Mark Flat)\n"
+            "  * [bold cyan]pos[/bold cyan]                 : View live open position monitor & reversal alert\n"
+            "  * [bold cyan]smc[/bold cyan]                 : Show Smart Money Concepts details (FVG, OB, Sweeps)\n"
+            "  * [bold cyan]levels[/bold cyan]              : View Support, Resistance & Volume Profile (POC/VAH/VAL)\n"
+            "  * [bold cyan]ml[/bold cyan]                  : View Machine Learning prediction & probability breakdown\n"
+            "  * [bold cyan]tf <15m|1h|4h|1d>[/bold cyan]   : Switch active timeframe (e.g. 'tf 15m')\n"
+            "  * [bold cyan]backtest[/bold cyan]            : Run rapid strategy backtest benchmark\n"
+            "  * [bold cyan]help[/bold cyan]                : Show instructions\n"
+            "  * [bold cyan]exit[/bold cyan] or [bold cyan]quit[/bold cyan]        : Close application",
             box=box.ROUNDED,
             border_style="cyan"
         ))
     else:
         print("=" * 70)
         print("AI PRICE ACTION ASSISTANT v2.0 - INSTITUTIONAL EDITION")
-        print("Commands: <coin>, stream, setup, smc, levels, ml, tf <interval>, backtest, help, exit")
+        print("Commands: <coin>, stream, setup, 1 (take), 2 (close), pos, smc, levels, ml, tf <interval>, backtest, help, exit")
         print("=" * 70)
 
-    # Prepare engines
+    # Prepare engines & Position State Manager
     engine = PriceActionEngine(max_candles=DEFAULT_CANDLE_LIMIT)
     client = BinanceClient(symbol=active_symbol, interval=active_timeframe)
+    position_manager = PositionStateManager()
 
     def load_market_data(sym: str, tf: str) -> Optional[AnalysisResult]:
         nonlocal client, engine
@@ -719,7 +898,7 @@ def run_interactive_assistant(default_symbol: str = "BTCUSDT", default_timeframe
     # Initial Analysis
     current_res = load_market_data(active_symbol, active_timeframe)
     if current_res:
-        print_single_report(current_res)
+        print_single_report(current_res, position_manager)
 
     # Interactive Loop
     while True:
@@ -771,7 +950,7 @@ def run_interactive_assistant(default_symbol: str = "BTCUSDT", default_timeframe
         elif cmd in ["clear", "cls"]:
             clear_screen()
             if current_res:
-                print_single_report(current_res)
+                print_single_report(current_res, position_manager)
 
         # Handle Live Stream
         elif cmd in ["stream", "live", "watch"]:
@@ -790,6 +969,84 @@ def run_interactive_assistant(default_symbol: str = "BTCUSDT", default_timeframe
                         print(f"SETUP: {ts.direction} | Entry: ${ts.entry_price:,.2f} | SL: ${ts.stop_loss:,.2f} | TP1: ${ts.tp1_price:,.2f} | R:R: {ts.effective_rr:.2f}")
                     else:
                         print("No trade setup passes the strict Effective R:R >= 1.80 filter gate.")
+
+        # Handle Take Trade (Option 1)
+        elif cmd in ["1", "take", "buy", "enter", "execute"]:
+            if current_res and current_res.trade_setup:
+                if position_manager.is_flat:
+                    pos = position_manager.open_position(current_res.trade_setup, current_price=current_res.current_price)
+                    msg = f"🚀 [bold green]Trade Taken & Position Opened![/bold green] Direction: {pos.direction} | Entry: ${pos.entry_price:,.2f} | SL: ${pos.stop_loss:,.2f} | TP1: ${pos.tp1_price:,.2f}"
+                    if HAS_RICH:
+                        console.print(Panel(msg, title="[bold green]POSITION OPENED[/bold green]", border_style="green", box=box.ROUNDED))
+                    else:
+                        print(f"Trade Taken! {pos.direction} at ${pos.entry_price:,.2f}")
+                else:
+                    msg = f"⚠️ [bold yellow]Position already open:[/bold yellow] {position_manager.active_position.direction} at ${position_manager.active_position.entry_price:,.2f}. Close current trade first!"
+                    if HAS_RICH:
+                        console.print(Panel(msg, border_style="yellow", box=box.ROUNDED))
+                    else:
+                        print(msg)
+            else:
+                msg = "No active trade setup currently passes the filter gate to take."
+                if HAS_RICH:
+                    console.print(f"[yellow]{msg}[/yellow]")
+                else:
+                    print(msg)
+
+        # Handle Close Trade (Option 2)
+        elif cmd in ["2", "close", "flat", "exit_trade"]:
+            if position_manager.has_open_trade:
+                closed = position_manager.close_position("Closed via user command")
+                msg = (
+                    f"🏁 [bold yellow]Position Closed![/bold yellow] {closed.direction} {closed.symbol}\n"
+                    f"Entry: ${closed.entry_price:,.2f} | Exit: ${current_res.current_price:,.2f} | "
+                    f"P&L: {closed.current_pnl_pct:+.2f}% | R:R Achieved: {closed.current_rr:+.2f}R (Peak: {closed.peak_rr:.2f}R)\n"
+                    f"[green]State returned to FLAT. Resuming scan for next high-probability setup![/green]"
+                )
+                if HAS_RICH:
+                    console.print(Panel(msg, title="[bold yellow]TRADE CLOSED[/bold yellow]", border_style="yellow", box=box.ROUNDED))
+                else:
+                    print(f"Position Closed. P&L: {closed.current_pnl_pct:+.2f}%")
+            else:
+                msg = "No open trade position to close. State is currently FLAT."
+                if HAS_RICH:
+                    console.print(f"[dim]{msg}[/dim]")
+                else:
+                    print(msg)
+
+        # Handle Position Status Query
+        elif cmd in ["pos", "position", "status"]:
+            if position_manager.has_open_trade:
+                pos = position_manager.active_position
+                if current_res:
+                    position_manager.update_position(current_res.current_price)
+                p_col = "green" if pos.direction == "LONG" else "red"
+                pnl_col = "bold green" if pos.current_pnl_pct >= 0 else "bold red"
+                
+                pos_info = (
+                    f"[bold white]Symbol & Direction:[/bold white] [{p_col} bold]{pos.direction} {pos.symbol}[/{p_col} bold] | State: [cyan]{pos.state.value}[/cyan]\n"
+                    f"[bold white]Entry Target:[/bold white] [cyan]${pos.entry_price:,.2f}[/cyan] | Current Price: [white]${pos.current_price:,.2f}[/white]\n"
+                    f"[bold white]Stop Loss:[/bold white] [red]${pos.stop_loss:,.2f}[/red] | TP1: [green]${pos.tp1_price:,.2f}[/green] | TP2: [bold green]${pos.tp2_price:,.2f}[/bold green]\n"
+                    f"[bold white]Unrealized P&L:[/bold white] [{pnl_col}]{pos.current_pnl_pct:+.2f}%[/{pnl_col}] | Current R:R: [{pnl_col}]{pos.current_rr:+.2f}R[/{pnl_col}]\n"
+                    f"[bold white]Peak R:R Reached:[/bold white] [yellow]{pos.peak_rr:.2f}R[/yellow]\n"
+                )
+                if pos.reversal_warning:
+                    pos_info += (
+                        f"\n[bold white on red]  ⚠️ WARNING: EARLY REVERSAL DETECTED!  [/bold white on red]\n"
+                        f"[bold yellow]{pos.reversal_reason}[/bold yellow]\n"
+                        f"[bold white]Consider closing or securing 50% profits now (type '2' or 'close')![/bold white]"
+                    )
+                if HAS_RICH:
+                    console.print(Panel(pos_info, title="[bold green]ACTIVE POSITION MONITOR[/bold green]", border_style=p_col, box=box.ROUNDED))
+                else:
+                    print(f"Position: {pos.direction} at ${pos.entry_price:,.2f} | P&L: {pos.current_pnl_pct:+.2f}%")
+            else:
+                msg = "Position State: [cyan]FLAT[/cyan] (No open position). Type 'setup' to view active setup plan."
+                if HAS_RICH:
+                    console.print(Panel(msg, title="[dim]POSITION MONITOR[/dim]", border_style="dim", box=box.ROUNDED))
+                else:
+                    print("Position State: FLAT (No open position).")
+
 
         # Handle SMC Query
         elif cmd in ["smc", "smart money", "fvg", "orderblock", "ob", "liquidity"]:
@@ -836,7 +1093,7 @@ def run_interactive_assistant(default_symbol: str = "BTCUSDT", default_timeframe
                     current_res = load_market_data(active_symbol, active_timeframe)
                     if current_res:
                         clear_screen()
-                        print_single_report(current_res)
+                        print_single_report(current_res, position_manager)
                 else:
                     msg = f"Invalid timeframe '{req_tf}'. Choose from: {', '.join(SUPPORTED_TIMEFRAMES[:6])}"
                     if HAS_RICH:
@@ -898,7 +1155,7 @@ def run_interactive_assistant(default_symbol: str = "BTCUSDT", default_timeframe
                 active_timeframe = target_tf
                 current_res = new_res
                 clear_screen()
-                print_single_report(current_res)
+                print_single_report(current_res, position_manager)
             else:
                 sugg = suggest_symbols(clean_cmd)
                 sugg_str = ", ".join([f"{name} ({sym})" for name, sym in sugg]) if sugg else "None"

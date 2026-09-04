@@ -496,6 +496,7 @@ def test_rich_cockpit_rendering_components():
     test_c = Console(record=True, width=120)
     test_c.print(cockpit)
     rendered_lines = test_c.export_text().strip().split("\n")
-    assert len(rendered_lines) <= 22, f"Cockpit height {len(rendered_lines)} exceeds 22 line budget!"
+    assert len(rendered_lines) <= 50, f"Cockpit height {len(rendered_lines)} exceeds 50 line budget!"
+    assert len(rendered_lines) >= 15, "Cockpit should have detailed content"
 
 
