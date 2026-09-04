@@ -1247,3 +1247,178 @@ def evaluate_confluence(
         vsa_signals=vsa_signals,
         tolerance_pct=tolerance_pct,
     )
+
+
+# ============================================================================
+# 7. TTM Squeeze & Volatility Compression Engine
+# ============================================================================
+
+@dataclass(frozen=True)
+class TTMSqueezeResult:
+    is_squeeze_on: bool
+    momentum: float
+    momentum_direction: str       # "BULLISH", "BEARISH", "NEUTRAL"
+    bb_upper: float
+    bb_lower: float
+    kc_upper: float
+    kc_lower: float
+    squeeze_bars: int
+
+
+class TTMSqueezeEngine:
+    """
+    Detects institutional volatility compression prior to large breakout expansions
+    by evaluating whether Bollinger Bands (20, 2.0) are compressed inside Keltner Channels (20, 1.5).
+    """
+    def __init__(self, bb_length: int = 20, bb_mult: float = 2.0, kc_length: int = 20, kc_mult: float = 1.5):
+        self.bb_length = bb_length
+        self.bb_mult = bb_mult
+        self.kc_length = kc_length
+        self.kc_mult = kc_mult
+
+    def compute(self, df: pd.DataFrame) -> TTMSqueezeResult:
+        opens, highs, lows, closes, volumes = _normalize_ohlcv(df)
+        n = len(closes)
+        if n < max(self.bb_length, self.kc_length):
+            return TTMSqueezeResult(
+                is_squeeze_on=False,
+                momentum=0.0,
+                momentum_direction="NEUTRAL",
+                bb_upper=float(closes[-1]) if n > 0 else 0.0,
+                bb_lower=float(closes[-1]) if n > 0 else 0.0,
+                kc_upper=float(closes[-1]) if n > 0 else 0.0,
+                kc_lower=float(closes[-1]) if n > 0 else 0.0,
+                squeeze_bars=0,
+            )
+
+        close_series = pd.Series(closes)
+        high_series = pd.Series(highs)
+        low_series = pd.Series(lows)
+
+        # 1. Bollinger Bands
+        sma = close_series.rolling(self.bb_length).mean()
+        std = close_series.rolling(self.bb_length).std()
+        bb_upper = sma + (self.bb_mult * std)
+        bb_lower = sma - (self.bb_mult * std)
+
+        # 2. Keltner Channels (EMA + ATR)
+        ema = close_series.ewm(span=self.kc_length, adjust=False).mean()
+        tr = np.maximum(highs[1:] - lows[1:],
+                        np.maximum(np.abs(highs[1:] - closes[:-1]),
+                                   np.abs(lows[1:] - closes[:-1])))
+        tr = np.insert(tr, 0, highs[0] - lows[0])
+        atr = pd.Series(tr).rolling(self.kc_length).mean()
+        kc_upper = ema + (self.kc_mult * atr)
+        kc_lower = ema - (self.kc_mult * atr)
+
+        # Squeeze condition: BB inside KC
+        squeeze_series = (bb_lower > kc_lower) & (bb_upper < kc_upper)
+        is_squeeze_on = bool(squeeze_series.iloc[-1])
+
+        # Count consecutive squeeze bars
+        squeeze_bars = 0
+        for val in reversed(squeeze_series.values):
+            if val:
+                squeeze_bars += 1
+            else:
+                break
+
+        # Momentum Histogram: Linear regression of price delta from mean of donchian midline and SMA
+        highest_high = high_series.rolling(self.kc_length).max()
+        lowest_low = low_series.rolling(self.kc_length).min()
+        donchian_mid = (highest_high + lowest_low) / 2.0
+        delta = closes[-1] - ((donchian_mid.iloc[-1] + sma.iloc[-1]) / 2.0)
+        momentum = float(delta)
+
+        if momentum > 0:
+            mom_dir = "BULLISH"
+        elif momentum < 0:
+            mom_dir = "BEARISH"
+        else:
+            mom_dir = "NEUTRAL"
+
+        return TTMSqueezeResult(
+            is_squeeze_on=is_squeeze_on,
+            momentum=momentum,
+            momentum_direction=mom_dir,
+            bb_upper=float(bb_upper.iloc[-1]),
+            bb_lower=float(bb_lower.iloc[-1]),
+            kc_upper=float(kc_upper.iloc[-1]),
+            kc_lower=float(kc_lower.iloc[-1]),
+            squeeze_bars=squeeze_bars,
+        )
+
+
+# ============================================================================
+# 8. Choppiness Index (CHOP) Engine
+# ============================================================================
+
+@dataclass(frozen=True)
+class ChoppinessResult:
+    chop_index: float
+    is_choppy: bool               # True if CHOP >= 61.8 (consolidating / chop gate)
+    is_trending: bool             # True if CHOP <= 38.2 (strong directional impulse)
+    market_state: str             # "CHOPPY", "TRENDING", "TRANSITIONAL"
+
+
+class ChoppinessIndexEngine:
+    """
+    Calculates the Choppiness Index (CHOP) to quantify trendiness vs congestion.
+    CHOP > 61.8: Market is sideways/choppy (filter out breakout trades).
+    CHOP < 38.2: Strong institutional trend expansion.
+    """
+    def __init__(self, period: int = 14):
+        self.period = period
+
+    def compute(self, df: pd.DataFrame) -> ChoppinessResult:
+        opens, highs, lows, closes, volumes = _normalize_ohlcv(df)
+        n = len(closes)
+        if n <= self.period:
+            return ChoppinessResult(
+                chop_index=50.0,
+                is_choppy=False,
+                is_trending=False,
+                market_state="TRANSITIONAL",
+            )
+
+        # True Range
+        tr = np.maximum(highs[1:] - lows[1:],
+                        np.maximum(np.abs(highs[1:] - closes[:-1]),
+                                   np.abs(lows[1:] - closes[:-1])))
+        tr = np.insert(tr, 0, highs[0] - lows[0])
+        tr_series = pd.Series(tr)
+        high_series = pd.Series(highs)
+        low_series = pd.Series(lows)
+
+        sum_tr = tr_series.rolling(self.period).sum().iloc[-1]
+        max_high = high_series.rolling(self.period).max().iloc[-1]
+        min_low = low_series.rolling(self.period).min().iloc[-1]
+        range_hl = max_high - min_low
+
+        if range_hl <= 0 or sum_tr <= 0:
+            chop = 50.0
+        else:
+            ratio = sum_tr / range_hl
+            chop = 100.0 * (math.log10(ratio) / math.log10(self.period))
+
+        chop = max(0.0, min(100.0, float(chop)))
+        if chop >= 61.8:
+            state = "CHOPPY"
+            is_c = True
+            is_t = False
+        elif chop <= 38.2:
+            state = "TRENDING"
+            is_c = False
+            is_t = True
+        else:
+            state = "TRANSITIONAL"
+            is_c = False
+            is_t = False
+
+        return ChoppinessResult(
+            chop_index=chop,
+            is_choppy=is_c,
+            is_trending=is_t,
+            market_state=state,
+        )
+

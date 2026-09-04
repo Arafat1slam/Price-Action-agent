@@ -2,7 +2,7 @@
 engines - Unified Price Action Analysis & Institutional Confluence Suite
 """
 
-from engines.smc_engine import SMCEngine, SMCAnalysisReport
+from engines.smc_engine import SMCEngine, SMCAnalysisReport, OTEZone, DealingRangeState
 from engines.indicators_engine import (
     VolumeProfileEngine,
     VWAPEngine,
@@ -11,6 +11,10 @@ from engines.indicators_engine import (
     FibonacciEngine,
     IndicatorConfluenceEngine,
     evaluate_confluence,
+    TTMSqueezeEngine,
+    TTMSqueezeResult,
+    ChoppinessIndexEngine,
+    ChoppinessResult,
 )
 from engines.chart_pattern_engine import ChartPatternEngine
 from engines.ml_predictor import MLPredictor, FeatureExtractor

@@ -651,11 +651,147 @@ class ChartPatternEngine:
         return patterns
 
     # ------------------------------------------------------------------------
+    # 5. Advanced Institutional Formations: Quasimodo & Wyckoff Spring
+    # ------------------------------------------------------------------------
+    def detect_quasimodo(self, df: pd.DataFrame) -> List[ChartPattern]:
+        """
+        Detects Quasimodo (QM) / Over-and-Under structural reversal patterns:
+        - Bearish QM: High -> Low -> Higher High (liquidity sweep) -> Lower Low (BOS) -> Retest Left Shoulder
+        - Bullish QM: Low -> High -> Lower Low (liquidity sweep) -> Higher High (BOS) -> Retest Left Shoulder
+        """
+        patterns: List[ChartPattern] = []
+        peaks, troughs = self.find_local_extrema(df)
+        if len(peaks) < 2 or len(troughs) < 2:
+            return patterns
+
+        n = len(df)
+        highs = df['high'].values
+        lows = df['low'].values
+        closes = df['close'].values
+
+        # Check Bearish Quasimodo
+        # P1 (Left Shoulder), T1 (Low), P2 (Higher High), T2 (Lower Low)
+        for i in range(len(peaks) - 1):
+            p1_idx, p1_price = peaks[i]
+            p2_idx, p2_price = peaks[i + 1]
+
+            if p2_price > p1_price:  # Higher High formed
+                # Find intermediate trough T1 between p1 and p2
+                mid_troughs = [t for t in troughs if p1_idx < t[0] < p2_idx]
+                # Find subsequent trough T2 after p2
+                post_troughs = [t for t in troughs if p2_idx < t[0]]
+
+                if mid_troughs and post_troughs:
+                    t1_idx, t1_price = mid_troughs[-1]
+                    t2_idx, t2_price = post_troughs[0]
+
+                    if t2_price < t1_price:  # Structural break to Lower Low!
+                        span = t2_idx - p1_idx
+                        if self.min_pattern_span <= span <= self.max_pattern_span:
+                            # Left shoulder level is the institutional short zone
+                            target = t2_price - (p2_price - t1_price) * 0.5
+                            patterns.append(ChartPattern(
+                                name="QUASIMODO_BEARISH",
+                                bias=BiasType.BEARISH,
+                                quality_score=0.88,
+                                neckline_price=round(p1_price, 4),
+                                projected_target=round(target, 4),
+                                invalidation_level=round(p2_price, 4),
+                                candle_span=span,
+                                start_index=p1_idx,
+                                end_index=t2_idx
+                            ))
+
+        # Check Bullish Quasimodo
+        # T1 (Left Shoulder Low), P1 (High), T2 (Lower Low), P2 (Higher High)
+        for i in range(len(troughs) - 1):
+            t1_idx, t1_price = troughs[i]
+            t2_idx, t2_price = troughs[i + 1]
+
+            if t2_price < t1_price:  # Lower Low formed
+                mid_peaks = [p for p in peaks if t1_idx < p[0] < t2_idx]
+                post_peaks = [p for p in peaks if t2_idx < p[0]]
+
+                if mid_peaks and post_peaks:
+                    p1_idx, p1_price = mid_peaks[-1]
+                    p2_idx, p2_price = post_peaks[0]
+
+                    if p2_price > p1_price:  # Structural break to Higher High!
+                        span = p2_idx - t1_idx
+                        if self.min_pattern_span <= span <= self.max_pattern_span:
+                            target = p2_price + (p1_price - t2_price) * 0.5
+                            patterns.append(ChartPattern(
+                                name="QUASIMODO_BULLISH",
+                                bias=BiasType.BULLISH,
+                                quality_score=0.88,
+                                neckline_price=round(t1_price, 4),
+                                projected_target=round(target, 4),
+                                invalidation_level=round(t2_price, 4),
+                                candle_span=span,
+                                start_index=t1_idx,
+                                end_index=p2_idx
+                            ))
+
+        return patterns
+
+    def detect_wyckoff_spring(self, df: pd.DataFrame) -> List[ChartPattern]:
+        """
+        Detects Wyckoff Spring patterns:
+        False break below established trading range support that instantly recovers
+        back into the range on expanding volume (Shakeout / Spring Type 2).
+        """
+        patterns: List[ChartPattern] = []
+        n = len(df)
+        if n < 20:
+            return patterns
+
+        lows = df['low'].values
+        highs = df['high'].values
+        closes = df['close'].values
+        volumes = df['volume'].values
+
+        peaks, troughs = self.find_local_extrema(df)
+        if len(troughs) < 3:
+            return patterns
+
+        # Find potential trading range base support from earlier troughs
+        for i in range(len(troughs) - 2):
+            t1_idx, t1_p = troughs[i]
+            t2_idx, t2_p = troughs[i + 1]
+
+            if abs(t1_p - t2_p) / max(1e-9, t1_p) <= 0.015:  # Flat support floor
+                support_level = min(t1_p, t2_p)
+
+                # Look at subsequent troughs for a spring dip
+                for j in range(i + 2, len(troughs)):
+                    sp_idx, sp_p = troughs[j]
+                    if sp_p < support_level * 0.999 and sp_p >= support_level * 0.96:
+                        # Spring candle must close back ABOVE the support level within 1-2 candles
+                        spring_end = min(n - 1, sp_idx + 2)
+                        if closes[spring_end] > support_level:
+                            span = spring_end - t1_idx
+                            target = support_level + (support_level - sp_p) * 2.5
+                            patterns.append(ChartPattern(
+                                name="WYCKOFF_SPRING",
+                                bias=BiasType.BULLISH,
+                                quality_score=0.86,
+                                neckline_price=round(support_level, 4),
+                                projected_target=round(target, 4),
+                                invalidation_level=round(sp_p, 4),
+                                candle_span=span,
+                                start_index=t1_idx,
+                                end_index=spring_end
+                            ))
+                            break
+
+        return patterns
+
+    # ------------------------------------------------------------------------
     # Master Detection Method
     # ------------------------------------------------------------------------
     def detect_all(self, df: pd.DataFrame) -> List[ChartPattern]:
         """
-        Executes comprehensive pattern detection across all geometric and multi-candle types.
+        Executes comprehensive pattern detection across all geometric, classical, and institutional types.
         """
         all_patterns: List[ChartPattern] = []
         all_patterns.extend(self.detect_double_tops(df))
@@ -663,4 +799,7 @@ class ChartPatternEngine:
         all_patterns.extend(self.detect_head_and_shoulders(df))
         all_patterns.extend(self.detect_triangles_and_wedges(df))
         all_patterns.extend(self.detect_multi_candle_patterns(df))
+        all_patterns.extend(self.detect_quasimodo(df))
+        all_patterns.extend(self.detect_wyckoff_spring(df))
         return all_patterns
+

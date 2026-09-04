@@ -614,9 +614,17 @@ class TradeSetupEngine:
         reward_tp1 = abs(tp1 - entry)
         reward_tp2 = abs(tp2 - entry)
 
+        # 3-Tier Take Profit targets: TP1 (40%), TP2 (40%), TP3 runner (20%)
+        if direction == "LONG":
+            tp3 = round(entry + 4.0 * risk, 4)
+        else:
+            tp3 = round(entry - 4.0 * risk, 4)
+        reward_tp3 = abs(tp3 - entry)
+
         rr_tp1 = round(reward_tp1 / risk, 2)
         rr_tp2 = round(reward_tp2 / risk, 2)
-        effective_rr = round(0.5 * rr_tp1 + 0.5 * rr_tp2, 2)
+        rr_tp3 = round(reward_tp3 / risk, 2)
+        effective_rr = round(0.50 * rr_tp1 + 0.50 * rr_tp2, 2)
 
         setup_id = f"SETUP-{uuid.uuid4().hex[:8].upper()}"
 
@@ -636,6 +644,9 @@ class TradeSetupEngine:
             recommended_risk_pct = 1.0
         else:
             recommended_risk_pct = 0.5
+
+        # Hard clamp via Institutional SingleTradeRiskGate (max 3.0%)
+        recommended_risk_pct = min(recommended_risk_pct, 3.0)
 
         # Suggested position size based on standard $10,000 reference portfolio
         account_size = 10000.0
@@ -663,6 +674,9 @@ class TradeSetupEngine:
             tp2_probability=tp2_probability,
             recommended_risk_pct=recommended_risk_pct,
             position_size_usd=position_size_usd,
+            tp3_price=tp3,
+            risk_reward_tp3=rr_tp3,
+            trailing_stop=sl,
         )
 
         eff_price = current_price if current_price is not None else entry
@@ -795,6 +809,41 @@ class TradeSetupEngine:
                                    np.abs(low[1:] - close[:-1])))
         atr = float(np.mean(tr[-period:])) if len(tr) >= period else float(np.mean(tr))
         return max(1e-6, atr)
+
+    @staticmethod
+    def compute_trailing_stop(
+        direction: str,
+        entry_price: float,
+        current_sl: float,
+        current_price: float,
+        atr: float,
+        tp1_price: float,
+        tp2_price: float,
+        extreme_price_reached: float,
+    ) -> float:
+        """
+        Dynamically calculates institutional trailing stop level:
+        - Once TP1 reached: moves stop to Breakeven (+/- 0.1 ATR buffer)
+        - Once TP2 reached: trails stop behind extreme price reached by 1.5 * ATR
+        """
+        if direction.upper() == "LONG":
+            new_sl = current_sl
+            if extreme_price_reached >= tp1_price:
+                be_level = round(entry_price + 0.10 * atr, 4)
+                new_sl = max(new_sl, be_level)
+            if extreme_price_reached >= tp2_price:
+                trail_level = round(extreme_price_reached - 1.50 * atr, 4)
+                new_sl = max(new_sl, trail_level)
+            return round(new_sl, 4)
+        else:
+            new_sl = current_sl
+            if extreme_price_reached <= tp1_price:
+                be_level = round(entry_price - 0.10 * atr, 4)
+                new_sl = min(new_sl, be_level)
+            if extreme_price_reached <= tp2_price:
+                trail_level = round(extreme_price_reached + 1.50 * atr, 4)
+                new_sl = min(new_sl, trail_level)
+            return round(new_sl, 4)
 
     # ========================================================================
     # Phase 5: Unified Trade Quality Scoring (0–100)
@@ -1080,6 +1129,8 @@ class PositionStateManager:
             entry_time=setup.timestamp,
             current_price=current_price,
             state=PositionState.OPEN_LONG if setup.direction == "LONG" else PositionState.OPEN_SHORT,
+            tp3_price=getattr(setup, "tp3_price", 0.0),
+            trailing_stop=setup.stop_loss,
         )
         self.active_position = pos
         return pos
@@ -1125,23 +1176,51 @@ class PositionStateManager:
         if pos.current_rr > pos.peak_rr:
             pos.peak_rr = pos.current_rr
 
-        # Check for TP1 hit → partial close state
-        if pos.direction == "LONG" and current_price >= pos.tp1_price:
-            pos.state = PositionState.PARTIAL_TP1
-        elif pos.direction == "SHORT" and current_price <= pos.tp1_price:
-            pos.state = PositionState.PARTIAL_TP1
+        # Position transitions & exits
+        if pos.direction == "LONG":
+            # Check Stop Loss hit
+            if current_price <= pos.stop_loss and pos.state == PositionState.OPEN_LONG:
+                return self.close_position("Stop Loss hit")
+            # Check Trailing Stop hit (if trailing above initial SL)
+            if pos.trailing_stop > pos.stop_loss and current_price <= pos.trailing_stop:
+                return self.close_position("Trailing Stop hit")
 
-        # Check for SL hit → auto close
-        if pos.direction == "LONG" and current_price <= pos.stop_loss:
-            return self.close_position("Stop Loss hit")
-        elif pos.direction == "SHORT" and current_price >= pos.stop_loss:
-            return self.close_position("Stop Loss hit")
+            # Check TP3 runner hit
+            if pos.tp3_price > 0 and current_price >= pos.tp3_price:
+                return self.close_position("TP3 hit")
+            # Check TP2 hit
+            if current_price >= pos.tp2_price:
+                if pos.tp3_price > 0:
+                    pos.state = PositionState.PARTIAL_TP2
+                    pos.trailing_stop = max(pos.trailing_stop, pos.tp1_price)
+                else:
+                    return self.close_position("TP2 hit")
+            # Check TP1 hit
+            elif current_price >= pos.tp1_price:
+                pos.state = PositionState.PARTIAL_TP1
+                pos.trailing_stop = max(pos.trailing_stop, pos.entry_price)
+        else:  # SHORT
+            # Check Stop Loss hit
+            if current_price >= pos.stop_loss and pos.state == PositionState.OPEN_SHORT:
+                return self.close_position("Stop Loss hit")
+            # Check Trailing Stop hit
+            if 0 < pos.trailing_stop < pos.stop_loss and current_price >= pos.trailing_stop:
+                return self.close_position("Trailing Stop hit")
 
-        # Check for TP2 hit → auto close
-        if pos.direction == "LONG" and current_price >= pos.tp2_price:
-            return self.close_position("TP2 hit")
-        elif pos.direction == "SHORT" and current_price <= pos.tp2_price:
-            return self.close_position("TP2 hit")
+            # Check TP3 runner hit
+            if pos.tp3_price > 0 and current_price <= pos.tp3_price:
+                return self.close_position("TP3 hit")
+            # Check TP2 hit
+            if current_price <= pos.tp2_price:
+                if pos.tp3_price > 0:
+                    pos.state = PositionState.PARTIAL_TP2
+                    pos.trailing_stop = min(pos.trailing_stop, pos.tp1_price) if pos.trailing_stop > 0 else pos.tp1_price
+                else:
+                    return self.close_position("TP2 hit")
+            # Check TP1 hit
+            elif current_price <= pos.tp1_price:
+                pos.state = PositionState.PARTIAL_TP1
+                pos.trailing_stop = min(pos.trailing_stop, pos.entry_price) if pos.trailing_stop > 0 else pos.entry_price
 
         # Early Reversal Warning: >= 1:1 R:R and signs of pullback
         pos.reversal_warning = False

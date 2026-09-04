@@ -154,6 +154,21 @@ class MarketRegimeEngine:
             drivers.append(f"Bollinger Bandwidth compressed ({bandwidth_pct:.2f}%)")
             drivers.append("Price oscillating within well-defined structural support/resistance")
 
+        # 8. Advanced Indicator Drivers (Choppiness Index & TTM Squeeze)
+        try:
+            from engines.indicators_engine import ChoppinessIndexEngine, TTMSqueezeEngine
+            chop_res = ChoppinessIndexEngine(period=14).compute(df)
+            squeeze_res = TTMSqueezeEngine().compute(df)
+            if chop_res.is_choppy:
+                drivers.append(f"Choppiness Index elevated ({chop_res.chop_index:.1f}/100) — Congestion warning")
+            elif chop_res.is_trending:
+                drivers.append(f"Choppiness Index ({chop_res.chop_index:.1f}/100) — Strong directional flow")
+
+            if squeeze_res.is_squeeze_on:
+                drivers.append(f"TTM Squeeze ACTIVE ({squeeze_res.squeeze_bars} bars) — Energy coiling for expansion")
+        except Exception:
+            pass
+
         return RegimeReport(
             regime=regime,
             regime_label=regime_label,
@@ -255,3 +270,10 @@ class MarketRegimeEngine:
         sma_vol = float(np.mean(volume[-span:]))
         curr_vol = float(volume[-1])
         return curr_vol / max(1e-8, sma_vol)
+
+    # Alias for uniform engine interface
+    analyze = detect_regime
+
+
+# Module-level aliases
+RegimeEngine = MarketRegimeEngine

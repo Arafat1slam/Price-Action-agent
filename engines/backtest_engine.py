@@ -257,6 +257,20 @@ class BacktestMetrics:
     max_consecutive_losses: int
     total_fees: float
     total_slippage: float
+    calmar_ratio: float = 0.0
+    monte_carlo: Optional['MonteCarloResult'] = None
+
+
+@dataclass
+class MonteCarloResult:
+    """Institutional Monte Carlo bootstrap resampling analytics."""
+    n_simulations: int
+    median_profit_pct: float
+    pct_5th_profit: float
+    pct_95th_profit: float
+    median_max_dd_pct: float
+    pct_95th_max_dd: float
+    risk_of_ruin_pct: float             # Probability of experiencing >20% equity drawdown
 
 
 @dataclass
@@ -1262,6 +1276,9 @@ class BacktestEngine:
         total_fees = round(sum(tr.fees_paid for tr in trades), 2)
         total_slip = round(sum(tr.slippage_paid for tr in trades), 2)
 
+        # Calmar Ratio: Return % over Max Drawdown %
+        calmar_ratio = round(net_profit_pct / max(max_drawdown_pct, 1.0), 2)
+
         return BacktestMetrics(
             initial_capital=initial_capital,
             final_equity=round(final_equity, 2),
@@ -1290,6 +1307,7 @@ class BacktestEngine:
             max_consecutive_losses=max_l,
             total_fees=total_fees,
             total_slippage=total_slip,
+            calmar_ratio=calmar_ratio,
         )
 
     # ------------------------------------------------------------------------
@@ -1447,3 +1465,63 @@ class BacktestEngine:
             )
 
         return table
+
+    def run_monte_carlo(
+        self,
+        result: BacktestResult,
+        n_simulations: int = 1000,
+        seed: int = 42,
+    ) -> MonteCarloResult:
+        """
+        Executes Monte Carlo bootstrap resampling (default 1,000 simulations) over executed trade returns.
+        Quantifies probability distributions of net profit, worst-case drawdown, and risk of ruin (>20% DD).
+        """
+        if not result.trades:
+            mc_empty = MonteCarloResult(
+                n_simulations=n_simulations,
+                median_profit_pct=0.0,
+                pct_5th_profit=0.0,
+                pct_95th_profit=0.0,
+                median_max_dd_pct=0.0,
+                pct_95th_max_dd=0.0,
+                risk_of_ruin_pct=0.0,
+            )
+            result.metrics.monte_carlo = mc_empty
+            return mc_empty
+
+        rng = np.random.default_rng(seed)
+        trade_pcts = np.array([tr.net_pnl_pct for tr in result.trades])
+        n_trades = len(trade_pcts)
+
+        sim_profits = []
+        sim_max_dds = []
+        ruin_count = 0
+
+        for _ in range(n_simulations):
+            sampled = rng.choice(trade_pcts, size=n_trades, replace=True)
+            path = np.cumprod(1.0 + sampled / 100.0)
+            final_profit = (path[-1] - 1.0) * 100.0
+            sim_profits.append(final_profit)
+
+            peak = np.maximum.accumulate(path)
+            dd = (peak - path) / np.maximum(peak, 1e-9) * 100.0
+            max_dd = float(np.max(dd))
+            sim_max_dds.append(max_dd)
+
+            if max_dd >= 20.0:
+                ruin_count += 1
+
+        sim_profits = np.array(sim_profits)
+        sim_max_dds = np.array(sim_max_dds)
+
+        mc_res = MonteCarloResult(
+            n_simulations=n_simulations,
+            median_profit_pct=round(float(np.median(sim_profits)), 2),
+            pct_5th_profit=round(float(np.percentile(sim_profits, 5)), 2),
+            pct_95th_profit=round(float(np.percentile(sim_profits, 95)), 2),
+            median_max_dd_pct=round(float(np.median(sim_max_dds)), 2),
+            pct_95th_max_dd=round(float(np.percentile(sim_max_dds, 95)), 2),
+            risk_of_ruin_pct=round((ruin_count / n_simulations) * 100.0, 2),
+        )
+        result.metrics.monte_carlo = mc_res
+        return mc_res

@@ -183,7 +183,11 @@ class ConfluenceEngine:
         # d) Mitigation decay (if relied feature tested >= 2 times)
         m_mitigation = 0.70 if relied_feature_tested else 1.0
 
-        total_multiplier = m_forming * m_htf_conflict * m_confluence * m_mitigation
+        # e) Institutional Session Killzone booster (London 07-10 UTC, NY 13-16 UTC)
+        in_kz, kz_name, m_kz_boost = self.detect_session_killzone(curr_ts)
+        m_killzone = m_kz_boost if (in_kz and abs(s_raw) > 0.05) else 1.0
+
+        total_multiplier = m_forming * m_htf_conflict * m_confluence * m_mitigation * m_killzone
         s_adjusted = float(np.clip(s_raw * total_multiplier, -1.0, 1.0))
 
         # 10. Calibrated Confidence Score (50% - 95%) & Final Bias
@@ -245,10 +249,58 @@ class ConfluenceEngine:
             "m_htf_conflict": round(m_htf_conflict, 2),
             "m_confluence": round(m_confluence, 2),
             "m_mitigation": round(m_mitigation, 2),
+            "m_killzone": round(m_killzone, 2),
             "total": round(total_multiplier, 3)
+        })
+        setattr(report, "session_killzone", {
+            "in_killzone": in_kz,
+            "killzone": kz_name,
+            "boost": round(m_killzone, 2)
         })
 
         return report
+
+    @staticmethod
+    def detect_session_killzone(timestamp: Any) -> Tuple[bool, str, float]:
+        """
+        Identifies institutional ICT Killzones:
+          - London Open Killzone: 07:00 - 10:00 UTC (institutional morning expansion)
+          - New York Open Killzone: 13:00 - 16:00 UTC (institutional high-liquidity overlap)
+        Returns (in_killzone, zone_name, multiplier_boost)
+        """
+        try:
+            if isinstance(timestamp, (int, float)):
+                ts_sec = timestamp / 1000.0 if timestamp > 1e11 else float(timestamp)
+                dt = datetime.fromtimestamp(ts_sec, tz=timezone.utc)
+            elif isinstance(timestamp, pd.Timestamp):
+                dt = timestamp.to_pydatetime()
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+            elif isinstance(timestamp, datetime):
+                dt = timestamp
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+            elif isinstance(timestamp, str):
+                dt = pd.to_datetime(timestamp).to_pydatetime()
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = datetime.now(timezone.utc)
+
+            hour = dt.hour
+            # London Open Killzone: 07:00 - 10:00 UTC
+            if 7 <= hour < 10:
+                return True, "LONDON_OPEN", 1.06
+            # New York Open Killzone: 13:00 - 16:00 UTC
+            elif 13 <= hour < 16:
+                return True, "NEW_YORK_OPEN", 1.06
+            # Asian Session: 00:00 - 06:00 UTC
+            elif 0 <= hour < 6:
+                return False, "ASIAN_RANGE", 1.0
+            else:
+                return False, "OFF_HOURS", 1.0
+        except Exception:
+            return False, "UNKNOWN", 1.0
 
     # ------------------------------------------------------------------------
     # Component Evaluators

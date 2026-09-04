@@ -169,6 +169,58 @@ class StructureEvent:
     new_trend: TrendState
 
 @dataclass
+class OTEZone:
+    """Optimal Trade Entry (OTE) Fibonacci 0.618 - 0.786 retracement zone."""
+    direction: str                     # "BULLISH" or "BEARISH"
+    fib_618: float
+    fib_705: float                     # Sweet spot (70.5%)
+    fib_786: float
+    anchor_low: float
+    anchor_high: float
+    is_price_in_ote: bool
+
+    @property
+    def is_bullish(self) -> bool:
+        return self.direction == "BULLISH"
+
+    @property
+    def fib_0618(self) -> float:
+        return self.fib_618
+
+    @property
+    def fib_0786(self) -> float:
+        return self.fib_786
+
+    @property
+    def ote_low(self) -> float:
+        return min(self.fib_618, self.fib_786)
+
+    @property
+    def ote_high(self) -> float:
+        return max(self.fib_618, self.fib_786)
+
+@dataclass
+class DealingRangeState:
+    """Institutional Premium vs. Discount Dealing Range equilibrium analysis."""
+    range_high: float
+    range_low: float
+    equilibrium: float                 # 50% midpoint
+    current_zone: str                  # "DISCOUNT", "PREMIUM", or "EQUILIBRIUM"
+    depth_pct: float                   # Percentage offset from equilibrium
+
+    @property
+    def is_premium(self) -> bool:
+        return self.current_zone == "PREMIUM"
+
+    @property
+    def is_discount(self) -> bool:
+        return self.current_zone == "DISCOUNT"
+
+    @property
+    def relative_percent(self) -> float:
+        return round(50.0 + self.depth_pct, 2)
+
+@dataclass
 class SMCAnalysisReport:
     timestamp: Any
     current_price: float
@@ -187,6 +239,8 @@ class SMCAnalysisReport:
     all_structure_events: List[StructureEvent] = field(default_factory=list)
     swing_highs: List[SwingPoint] = field(default_factory=list)
     swing_lows: List[SwingPoint] = field(default_factory=list)
+    ote_zone: Optional[OTEZone] = None
+    dealing_range: Optional[DealingRangeState] = None
 
 # ============================================================================
 # Core SMC Engine
@@ -815,7 +869,128 @@ class SMCEngine:
             "swing_lows": swing_lows
         }
 
-    def analyze(self, df: pd.DataFrame) -> SMCAnalysisReport:
+    def compute_ote_zone(
+        self,
+        swing_highs: Any = None,
+        swing_lows: Any = None,
+        current_price: Optional[float] = None,
+        trend: Optional[SMCTrend] = None,
+        **kwargs
+    ) -> Optional[OTEZone]:
+        """
+        Calculates Institutional Optimal Trade Entry (OTE) 0.618 - 0.786 Fibonacci zone.
+        Accepts:
+          - (swing_highs, swing_lows, current_price, trend)
+          - compute_ote_zone(swing_low=100.0, swing_high=200.0, is_bullish=True, current_price=150.0)
+        """
+        if "swing_low" in kwargs and "swing_high" in kwargs:
+            sl = float(kwargs["swing_low"])
+            sh = float(kwargs["swing_high"])
+            is_bull = bool(kwargs.get("is_bullish", True))
+            curr_p = float(kwargs.get("current_price", current_price if current_price is not None else (sh if is_bull else sl)))
+        elif isinstance(swing_highs, (int, float)) and isinstance(swing_lows, (int, float)):
+            sl = float(swing_highs)
+            sh = float(swing_lows)
+            is_bull = bool(current_price if current_price is not None else True)
+            curr_p = float(kwargs.get("current_price", (sh if is_bull else sl)))
+        elif isinstance(swing_highs, list) and isinstance(swing_lows, list):
+            if not swing_highs or not swing_lows:
+                return None
+            sh = float(swing_highs[-1].price)
+            sl = float(swing_lows[-1].price)
+            curr_p = float(current_price) if current_price is not None else 0.0
+            is_bull = (trend == SMCTrend.BULLISH)
+        else:
+            return None
+
+        range_span = sh - sl
+        if range_span <= 0:
+            return None
+
+        if is_bull:
+            fib_618 = sh - (range_span * 0.618)
+            fib_705 = sh - (range_span * 0.705)
+            fib_786 = sh - (range_span * 0.786)
+            is_in_ote = fib_786 <= curr_p <= fib_618
+            return OTEZone(
+                direction="BULLISH",
+                fib_618=float(fib_618),
+                fib_705=float(fib_705),
+                fib_786=float(fib_786),
+                anchor_low=float(sl),
+                anchor_high=float(sh),
+                is_price_in_ote=bool(is_in_ote),
+            )
+        else:
+            fib_618 = sl + (range_span * 0.618)
+            fib_705 = sl + (range_span * 0.705)
+            fib_786 = sl + (range_span * 0.786)
+            is_in_ote = fib_618 <= curr_p <= fib_786
+            return OTEZone(
+                direction="BEARISH",
+                fib_618=float(fib_618),
+                fib_705=float(fib_705),
+                fib_786=float(fib_786),
+                anchor_low=float(sl),
+                anchor_high=float(sh),
+                is_price_in_ote=bool(is_in_ote),
+            )
+
+    def compute_dealing_range(
+        self,
+        swing_highs: Any = None,
+        swing_lows: Any = None,
+        current_price: Optional[float] = None,
+        **kwargs
+    ) -> Optional[DealingRangeState]:
+        """
+        Determines whether price is in institutional Premium (>50%), Discount (<50%), or Equilibrium (50%).
+        Accepts:
+          - (swing_highs, swing_lows, current_price)
+          - compute_dealing_range(swing_low=100.0, swing_high=200.0, current_price=120.0)
+        """
+        if "swing_low" in kwargs and "swing_high" in kwargs:
+            range_low = float(kwargs["swing_low"])
+            range_high = float(kwargs["swing_high"])
+            curr_p = float(kwargs.get("current_price", current_price if current_price is not None else 0.0))
+        elif isinstance(swing_highs, (int, float)) and isinstance(swing_lows, (int, float)):
+            range_low = float(swing_highs)
+            range_high = float(swing_lows)
+            curr_p = float(current_price if current_price is not None else 0.0)
+        elif isinstance(swing_highs, list) and isinstance(swing_lows, list):
+            if not swing_highs or not swing_lows:
+                return None
+            recent_highs = [p.price for p in swing_highs[-3:]]
+            recent_lows = [p.price for p in swing_lows[-3:]]
+            range_high = max(recent_highs)
+            range_low = min(recent_lows)
+            curr_p = float(current_price) if current_price is not None else 0.0
+        else:
+            return None
+
+        diff = range_high - range_low
+        if diff <= 0:
+            return None
+
+        eq = (range_high + range_low) / 2.0
+        depth_pct = ((curr_p - eq) / diff) * 100.0
+
+        if depth_pct < -5.0:
+            zone = "DISCOUNT"
+        elif depth_pct > 5.0:
+            zone = "PREMIUM"
+        else:
+            zone = "EQUILIBRIUM"
+
+        return DealingRangeState(
+            range_high=float(range_high),
+            range_low=float(range_low),
+            equilibrium=float(eq),
+            current_zone=zone,
+            depth_pct=float(depth_pct),
+        )
+
+    def analyze(self, df: pd.DataFrame) -> Optional[SMCAnalysisReport]:
         """Alias for analyze_buffer."""
         return self.analyze_buffer(df)
 
@@ -823,8 +998,8 @@ class SMCEngine:
         """
         Executes full, integrated SMC analysis on rolling OHLCV dataframe.
         """
-        n = len(df)
-        if n < 10:
+        n = len(df) if df is not None else 0
+        if df is None or n < 10:
             return SMCAnalysisReport(
                 timestamp=None,
                 current_price=0.0,
@@ -872,7 +1047,11 @@ class SMCEngine:
         all_sweeps = self.detect_liquidity_sweeps(df, sh_tuples, sl_tuples)
         recent_sweeps = [s for s in all_sweeps if s.sweep_index >= max(0, n - 15)]
 
-        # 5. Institutional Bias & Confidence Synthesis
+        # 5. OTE & Dealing Range Calculations
+        ote_zone = self.compute_ote_zone(sh_points, sl_points, current_price, smc_trend)
+        dealing_range = self.compute_dealing_range(sh_points, sl_points, current_price)
+
+        # 6. Institutional Bias & Confidence Synthesis
         bullish_signals = 0
         bearish_signals = 0
 
@@ -895,6 +1074,18 @@ class SMCEngine:
             if current_price <= ob.top and current_price >= ob.bottom * 0.99:
                 bearish_signals += 2
                 break
+
+        if ote_zone and ote_zone.is_price_in_ote:
+            if ote_zone.direction == "BULLISH":
+                bullish_signals += 2
+            elif ote_zone.direction == "BEARISH":
+                bearish_signals += 2
+
+        if dealing_range:
+            if dealing_range.current_zone == "DISCOUNT":
+                bullish_signals += 1
+            elif dealing_range.current_zone == "PREMIUM":
+                bearish_signals += 1
 
         if bullish_signals > bearish_signals:
             bias = "BULLISH"
@@ -923,5 +1114,9 @@ class SMCEngine:
             all_sweeps=all_sweeps,
             all_structure_events=structure_events,
             swing_highs=sh_points,
-            swing_lows=sl_points
+            swing_lows=sl_points,
+            ote_zone=ote_zone,
+            dealing_range=dealing_range,
         )
+
+

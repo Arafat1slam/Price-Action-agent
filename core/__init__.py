@@ -6,6 +6,12 @@ from core.security import (
     SHORT_DEV_TAG,
     verify_author_integrity,
     get_attribution_badge,
+    CredentialGuardian,
+    RiskFirewall,
+    DataAnomalyGuard,
+    InputSanitizer,
+    SecurityBreachException,
+    risk_firewall,
 )
 
 # Enforce developer integrity check upon package initialization

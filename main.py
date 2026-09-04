@@ -81,6 +81,7 @@ from core.security import (
     SHORT_DEV_TAG,
     verify_author_integrity,
     get_attribution_badge,
+    risk_firewall,
 )
 
 # Mandatory author attribution check on startup
@@ -124,6 +125,11 @@ def create_header_panel(res: AnalysisResult) -> Panel:
     right = f"Bias: [{color}]{res.bias}[/{color}] ([bold]{res.confidence}%[/bold]) | UTC: [dim]{datetime.now(timezone.utc).strftime('%H:%M:%S')}[/dim] | [dim cyan]{SHORT_DEV_TAG}[/dim cyan]"
     verify_author_integrity(right)
     grid.add_row(left, right)
+
+    circuit_state = "[bold red]TRIPPED[/bold red]" if risk_firewall.is_circuit_breaker_tripped else "[bold green]ARMED[/bold green]"
+    sub_left = f"[dim]Risk Firewall:[/dim] {circuit_state} [dim]| Max DD: 5.0% | Max Risk: 3.0% | KillSwitch: Ready[/dim]"
+    sub_right = "[dim green]Institutional Risk Guard Active[/dim green]"
+    grid.add_row(sub_left, sub_right)
 
     return Panel(grid, box=box.ROUNDED, style="cyan")
 

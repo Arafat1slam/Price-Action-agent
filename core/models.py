@@ -188,6 +188,9 @@ class TradeSetup:
     entry_distance_pct: float = 0.0         # Distance from current price to entry (%): e.g. -0.45%
     entry_action: str = ""                  # Actionable instruction (WAIT vs ENTER NOW)
     quality_score: Optional['TradeQualityScore'] = None  # Unified 0-100 quality score
+    tp3_price: float = 0.0                  # Institutional runner target (e.g. 1:4.0 R:R)
+    risk_reward_tp3: float = 0.0            # R:R for TP3
+    trailing_stop: float = 0.0              # Dynamic ATR trailing stop level
 
 
 class QualityGrade(str, Enum):
@@ -216,6 +219,7 @@ class PositionState(str, Enum):
     OPEN_LONG = "OPEN_LONG"      # Long position active
     OPEN_SHORT = "OPEN_SHORT"    # Short position active
     PARTIAL_TP1 = "PARTIAL_TP1"  # TP1 hit, partial close, trailing remainder
+    PARTIAL_TP2 = "PARTIAL_TP2"  # TP2 hit, second scale-out, trailing runner
 
 
 @dataclass
@@ -236,3 +240,5 @@ class ActivePosition:
     reversal_warning: bool = False
     reversal_reason: str = ""
     peak_rr: float = 0.0         # Highest R:R reached during this trade
+    tp3_price: float = 0.0
+    trailing_stop: float = 0.0

@@ -1,5 +1,6 @@
 import json
 import time
+import random
 import threading
 import requests
 import websocket
@@ -13,6 +14,7 @@ from config import (
     BINANCE_API_KEY,
     logger,
 )
+from core.security import InputSanitizer, CredentialGuardian
 
 class BinanceClient:
     """
@@ -21,13 +23,19 @@ class BinanceClient:
     """
 
     def __init__(self, symbol: str, interval: str):
-        self.symbol = symbol.upper()
-        self.interval = interval.lower()
+        try:
+            self.symbol = InputSanitizer.sanitize_symbol(symbol).upper()
+            self.interval = InputSanitizer.sanitize_timeframe(interval).lower()
+        except Exception:
+            self.symbol = symbol.upper()
+            self.interval = interval.lower()
+
         self.ws: Optional[websocket.WebSocketApp] = None
         self.ws_thread: Optional[threading.Thread] = None
         self.is_running = False
         self.reconnect_delay = 2
         self.max_reconnect_delay = 30
+        self.last_message_time = time.time()
         self.on_update_callback: Optional[Callable[[Dict[str, Any]], None]] = None
         self.on_error_callback: Optional[Callable[[str], None]] = None
 
@@ -153,21 +161,26 @@ class BinanceClient:
                 )
                 self.ws.run_forever(ping_interval=20, ping_timeout=10)
             except Exception as e:
-                logger.error(f"WebSocket execution error: {e}")
+                sanitized_err = CredentialGuardian.sanitize_log_message(str(e))
+                logger.error(f"WebSocket execution error: {sanitized_err}")
                 if self.on_error_callback:
-                    self.on_error_callback(str(e))
+                    self.on_error_callback(sanitized_err)
 
             if self.is_running:
-                logger.info(f"Reconnecting WebSocket in {self.reconnect_delay} seconds...")
-                time.sleep(self.reconnect_delay)
+                jitter = random.uniform(0.1, 1.2)
+                sleep_sec = self.reconnect_delay + jitter
+                logger.info(f"Reconnecting WebSocket in {sleep_sec:.2f} seconds (backoff + jitter)...")
+                time.sleep(sleep_sec)
                 self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
 
     def _on_ws_open(self, ws):
         logger.info("Binance WebSocket stream connection established.")
         self.reconnect_delay = 2
+        self.last_message_time = time.time()
 
     def _on_ws_message(self, ws, message):
         try:
+            self.last_message_time = time.time()
             data = json.loads(message)
             k = None
             if "data" in data and "k" in data["data"]:
@@ -193,12 +206,21 @@ class BinanceClient:
             logger.error(f"Error processing WS message: {e}")
 
     def _on_ws_error(self, ws, error):
-        logger.error(f"WebSocket Error: {error}")
+        sanitized_err = CredentialGuardian.sanitize_log_message(str(error))
+        logger.error(f"WebSocket Error: {sanitized_err}")
         if self.on_error_callback:
-            self.on_error_callback(str(error))
+            self.on_error_callback(sanitized_err)
 
     def _on_ws_close(self, ws, close_status_code, close_msg):
         logger.info(f"WebSocket stream closed (code: {close_status_code}, msg: {close_msg})")
+
+    def is_healthy(self, max_stale_seconds: float = 60.0) -> bool:
+        """
+        Returns True if the WebSocket connection has received updates within max_stale_seconds.
+        """
+        if not self.is_running:
+            return False
+        return (time.time() - self.last_message_time) < max_stale_seconds
 
     def stop(self):
         """

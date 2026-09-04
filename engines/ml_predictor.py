@@ -162,8 +162,9 @@ class MLPredictor:
     Supports pre-trained HistGradientBoostingClassifier or calibrated statistical fallbacks.
     """
 
-    def __init__(self, model_path: str = "models/price_action_ml_model.joblib"):
+    def __init__(self, model_path: str = "models/price_action_ml_model.joblib", temperature: float = 1.0):
         self.model_path = model_path
+        self.temperature = max(0.1, float(temperature))
         self.bundle: Optional[Dict[str, Any]] = None
         self.model = None
         self.feature_extractor = FeatureExtractor()
@@ -253,9 +254,10 @@ class MLPredictor:
         )
         directional_signal = float(np.clip(directional_signal, -1.0, 1.0))
 
-        # Softmax-style mapping centered at uniform 0.333
-        exp_bull = float(np.exp(directional_signal * 1.5))
-        exp_bear = float(np.exp(-directional_signal * 1.5))
+        # Temperature-scaled Softmax mapping centered at uniform 0.333
+        scale = 1.5 / self.temperature
+        exp_bull = float(np.exp(directional_signal * scale))
+        exp_bear = float(np.exp(-directional_signal * scale))
         exp_neut = 1.0
 
         total = exp_bull + exp_bear + exp_neut
