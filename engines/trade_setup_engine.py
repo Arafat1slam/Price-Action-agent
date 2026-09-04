@@ -37,6 +37,7 @@ from core.models import (
     MarketRegime,
     MLInferenceResult,
 )
+from core.security import verify_author_integrity
 
 
 class TradeSetupEngine:
@@ -48,6 +49,7 @@ class TradeSetupEngine:
     MIN_EFFECTIVE_RR = 1.80
 
     def __init__(self, min_effective_rr: float = 1.80, atr_multiplier_sl: float = 0.20):
+        verify_author_integrity()
         self.min_effective_rr = min_effective_rr
         self.atr_multiplier_sl = atr_multiplier_sl
 
@@ -1053,6 +1055,7 @@ class PositionStateManager:
     """
 
     def __init__(self):
+        verify_author_integrity()
         self.active_position: Optional[ActivePosition] = None
         self._trade_history: List[ActivePosition] = []
 

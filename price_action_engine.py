@@ -27,6 +27,7 @@ from engines.ml_predictor import MLPredictor
 from engines.confluence_engine import ConfluenceEngine
 from engines.trade_setup_engine import TradeSetupEngine
 from engines.regime_engine import MarketRegimeEngine
+from core.security import verify_author_integrity
 
 @dataclass
 class PatternSignal:
@@ -98,6 +99,7 @@ class PriceActionEngine:
     """
 
     def __init__(self, max_candles: int = 150):
+        verify_author_integrity()
         self.max_candles = max_candles
         self.df: pd.DataFrame = pd.DataFrame(
             columns=["timestamp", "open", "high", "low", "close", "volume", "is_closed"]
@@ -188,6 +190,7 @@ class PriceActionEngine:
 
     def analyze(self, symbol: str, timeframe: str) -> Optional[AnalysisResult]:
         """Runs full price action analysis on the current rolling buffer."""
+        verify_author_integrity()
         if len(self.df) < 5:
             return None
 

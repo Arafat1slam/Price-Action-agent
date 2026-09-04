@@ -75,6 +75,16 @@ from binance_client import BinanceClient
 from price_action_engine import PriceActionEngine, AnalysisResult
 from core.models import BiasType, SetupType, TradeSetup, TradeQualityScore, QualityGrade, PositionState, ActivePosition
 from engines.trade_setup_engine import PositionStateManager
+from core.security import (
+    DEVELOPER_NAME,
+    DEVELOPER_TAG,
+    SHORT_DEV_TAG,
+    verify_author_integrity,
+    get_attribution_badge,
+)
+
+# Mandatory author attribution check on startup
+verify_author_integrity()
 
 
 def clear_screen():
@@ -110,8 +120,9 @@ def create_header_panel(res: AnalysisResult) -> Panel:
     grid.add_column(ratio=2)
     grid.add_column(ratio=1, justify="right")
 
-    left = f"[bold cyan]{res.symbol}[/bold cyan] ({res.timeframe.upper()}) | Price: [bold white]${res.current_price:,.2f}[/bold white] | Status: {status_tag}"
-    right = f"Bias: [{color}]{res.bias}[/{color}] ([bold]{res.confidence}%[/bold]) | UTC: [dim]{datetime.now(timezone.utc).strftime('%H:%M:%S')}[/dim]"
+    left = f"[bold cyan]{res.symbol}[/bold cyan] ({res.timeframe.upper()}) | Price: [bold white]${res.current_price:,.2f}[/bold white] | {status_tag}"
+    right = f"Bias: [{color}]{res.bias}[/{color}] ([bold]{res.confidence}%[/bold]) | UTC: [dim]{datetime.now(timezone.utc).strftime('%H:%M:%S')}[/dim] | [dim cyan]{SHORT_DEV_TAG}[/dim cyan]"
+    verify_author_integrity(right)
     grid.add_row(left, right)
 
     return Panel(grid, box=box.ROUNDED, style="cyan")
@@ -420,7 +431,8 @@ def build_cockpit_renderable(res: AnalysisResult, position_manager: Optional[Pos
         r_col = "green" if "BULL" in rr.regime.value else ("red" if "BEAR" in rr.regime.value else ("magenta" if "BREAKOUT" in rr.regime.value else "yellow"))
         rr_text = f"Regime: [{r_col} bold]{rr.regime_label}[/{r_col} bold] [dim](ADX: {rr.adx:.1f})[/dim]"
     
-    right_h = f"Bias: [{color}]{res.bias}[/{color}] ([bold]{res.confidence}%[/bold]) | UTC: [dim]{utc_str}[/dim]"
+    right_h = f"Bias: [{color}]{res.bias}[/{color}] ([bold]{res.confidence}%[/bold]) | UTC: [dim]{utc_str}[/dim] | [bold cyan]{SHORT_DEV_TAG}[/bold cyan]"
+    verify_author_integrity(right_h)
     header_grid.add_row(left_h, rr_text, right_h)
     header_panel = Panel(header_grid, box=box.ROUNDED, style="cyan")
 
@@ -683,9 +695,10 @@ def build_cockpit_renderable(res: AnalysisResult, position_manager: Optional[Pos
         pos_items.append(pos_panel)
 
     footer = Text.from_markup(
-        "[dim white]-- Controls: [bold cyan]1[/bold cyan]=Take Trade | [bold yellow]2[/bold yellow]=Close Trade | [bold red]Ctrl+C[/bold red]=Exit to Chat | Live Streaming WebSocket Active (No Blink, No Scroll) --[/dim white]",
+        f"[dim white]-- Controls: [bold cyan]1[/bold cyan]=Take Trade | [bold yellow]2[/bold yellow]=Close Trade | [bold red]Ctrl+C[/bold red]=Exit | [bold cyan]{DEVELOPER_TAG}[/bold cyan] | Live WebSocket Active --[/dim white]",
         justify="center"
     )
+    verify_author_integrity(footer.plain)
 
     return Group(header_panel, row1_grid, trade_panel, *pos_items, footer)
 
@@ -835,8 +848,8 @@ def run_interactive_assistant(default_symbol: str = "BTCUSDT", default_timeframe
     active_timeframe = default_timeframe
 
     if HAS_RICH:
-        console.print(Panel(
-            "[bold cyan]AI PRICE ACTION ASSISTANT v2.0[/bold cyan] - [bold white]INSTITUTIONAL EDITION[/bold white]\n"
+        banner_content = (
+            f"[bold cyan]AI PRICE ACTION ASSISTANT v2.0[/bold cyan] - [bold white]INSTITUTIONAL EDITION[/bold white] | [bold yellow]{DEVELOPER_TAG}[/bold yellow]\n"
             "[italic white]Smart Money Concepts (SMC), Volume Profile, KDE S/R, Machine Learning & Live Confluence[/italic white]\n\n"
             "[bold green]QUICK COMMANDS & ACTIONS:[/bold green]\n"
             "  * Type any coin name to analyze: [bold yellow]btc[/bold yellow], [bold yellow]eth[/bold yellow], [bold yellow]sol[/bold yellow], [bold yellow]bnb[/bold yellow], [bold yellow]doge[/bold yellow], [bold yellow]ada[/bold yellow]\n"
@@ -851,13 +864,17 @@ def run_interactive_assistant(default_symbol: str = "BTCUSDT", default_timeframe
             "  * [bold cyan]tf <15m|1h|4h|1d>[/bold cyan]   : Switch active timeframe (e.g. 'tf 15m')\n"
             "  * [bold cyan]backtest[/bold cyan]            : Run rapid strategy backtest benchmark\n"
             "  * [bold cyan]help[/bold cyan]                : Show instructions\n"
-            "  * [bold cyan]exit[/bold cyan] or [bold cyan]quit[/bold cyan]        : Close application",
+            "  * [bold cyan]exit[/bold cyan] or [bold cyan]quit[/bold cyan]        : Close application"
+        )
+        verify_author_integrity(banner_content)
+        console.print(Panel(
+            banner_content,
             box=box.ROUNDED,
             border_style="cyan"
         ))
     else:
         print("=" * 70)
-        print("AI PRICE ACTION ASSISTANT v2.0 - INSTITUTIONAL EDITION")
+        print(f"AI PRICE ACTION ASSISTANT v2.0 - {DEVELOPER_TAG}")
         print("Commands: <coin>, stream, setup, 1 (take), 2 (close), pos, smc, levels, ml, tf <interval>, backtest, help, exit")
         print("=" * 70)
 
@@ -1184,15 +1201,19 @@ def prompt_user_startup() -> Tuple[str, str, int]:
     """
     clear_screen()
     if HAS_RICH:
+        w_text = (
+            f"[bold cyan]AI PRICE ACTION ASSISTANT v2.0[/bold cyan] — [bold white]INSTITUTIONAL SETUP WIZARD[/bold white] | [bold yellow]{DEVELOPER_TAG}[/bold yellow]\n"
+            "[italic white]Configure your scanning session in 2 simple steps.[/italic white]"
+        )
+        verify_author_integrity(w_text)
         console.print(Panel(
-            "[bold cyan]AI PRICE ACTION ASSISTANT v2.0[/bold cyan] — [bold white]INSTITUTIONAL SETUP WIZARD[/bold white]\n"
-            "[italic white]Configure your scanning session in 2 simple steps.[/italic white]",
+            w_text,
             box=box.ROUNDED,
             border_style="cyan"
         ))
     else:
         print("=" * 60)
-        print("  AI PRICE ACTION ASSISTANT v2.0 - SETUP WIZARD")
+        print(f"  AI PRICE ACTION ASSISTANT v2.0 - {DEVELOPER_TAG}")
         print("=" * 60)
 
     # 1. Market prompt
@@ -1264,6 +1285,8 @@ def prompt_user_startup() -> Tuple[str, str, int]:
 
 
 def main():
+    # Enforce mandatory developer attribution check
+    verify_author_integrity()
     parser = argparse.ArgumentParser(description="Live Institutional Price Action Scanner & Cockpit v2.0")
     parser.add_argument("--symbol", type=str, default=None, help="Trading pair (e.g. BTCUSDT, SOLUSDT)")
     parser.add_argument("--timeframe", type=str, default=None, help="Candle timeframe (e.g. 5m, 15m, 1h, 4h)")
