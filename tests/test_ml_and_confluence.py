@@ -469,6 +469,7 @@ def test_rich_cockpit_rendering_components():
         create_logs_panel,
         render_cockpit,
         render_text_cockpit,
+        build_cockpit_renderable,
     )
 
     engine = PriceActionEngine(max_candles=60)
@@ -487,4 +488,14 @@ def test_rich_cockpit_rendering_components():
     assert create_logs_panel(logs) is not None
     assert render_cockpit(res, logs) is not None
     render_text_cockpit(res, logs)
+
+    # Compact cockpit renderable verification
+    cockpit = build_cockpit_renderable(res)
+    assert cockpit is not None
+    from rich.console import Console
+    test_c = Console(record=True, width=120)
+    test_c.print(cockpit)
+    rendered_lines = test_c.export_text().strip().split("\n")
+    assert len(rendered_lines) <= 22, f"Cockpit height {len(rendered_lines)} exceeds 22 line budget!"
+
 

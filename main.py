@@ -359,48 +359,145 @@ def render_text_cockpit(res: AnalysisResult, logs: Optional[List[str]] = None):
 
 
 def build_cockpit_renderable(res: AnalysisResult) -> Group:
-    """Builds a composite renderable containing all cockpit panels for 100% zero-flicker live rendering."""
-    cards_table = Table.grid(expand=True)
-    cards_table.add_column(ratio=1)
-    cards_table.add_column(ratio=1)
-    cards_table.add_row(create_mtf_panel(res), create_smc_panel(res))
+    """
+    Builds an ultra-compact (~17 line), fixed-height composite cockpit renderable
+    for 100% zero-flicker and zero-scroll live streaming on Windows consoles.
+    """
+    color = get_bias_color(res.bias)
+    status_tag = "[green]CLOSED CANDLE[/green]" if res.is_candle_closed else "[magenta]LIVE FORMING[/magenta]"
 
-    items = [
-        create_header_panel(res),
-        cards_table,
-        create_srp_panel(res),
-        create_trade_setup_card(res),
-    ]
+    # 1. Header (3 lines)
+    header_grid = Table.grid(expand=True)
+    header_grid.add_column(ratio=2)
+    header_grid.add_column(ratio=1, justify="right")
+    left_h = f"[bold cyan]{res.symbol}[/bold cyan] ({res.timeframe.upper()}) | Price: [bold white]${res.current_price:,.2f}[/bold white] | Status: {status_tag}"
+    utc_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    right_h = f"Bias: [{color}]{res.bias}[/{color}] ([bold]{res.confidence}%[/bold]) | UTC: [dim]{utc_str}[/dim]"
+    header_grid.add_row(left_h, right_h)
+    header_panel = Panel(header_grid, box=box.ROUNDED, style="cyan")
 
-    if res.trade_setup and res.trade_setup.execution_state == "CONFIRMED_ENTRY_TRIGGER":
-        items.append(
-            Panel(
-                f"[bold black on bright_green]  🚨 CONFIRMED ENTRY TRIGGER ACTIVATED!  [/bold black on bright_green]\n\n"
-                f"[bold white]Target confirmed at ${res.current_price:,.2f}. Execute {res.trade_setup.direction} NOW![/bold white]\n"
-                f"[bold yellow]Stop Loss: ${res.trade_setup.stop_loss:,.2f} | TP1: ${res.trade_setup.tp1_price:,.2f} ({res.trade_setup.tp1_probability}%) | Sizing: ${res.trade_setup.position_size_usd:,.2f}[/bold yellow]",
-                box=box.HEAVY,
-                border_style="bright_green"
-            )
+    # 2. Left Column: Market Structure & Confluence
+    left_table = Table(box=box.SIMPLE, show_header=False, expand=True, padding=(0, 1))
+    left_table.add_column("Key", style="bold white", width=14)
+    left_table.add_column("Value")
+
+    # Multi-Timeframe Breakdown
+    rep = res.confluence_report
+    if rep and rep.timeframe_breakdown:
+        mtf_items = []
+        for tf in ["1d", "4h", "1h", "15m"]:
+            if tf in rep.timeframe_breakdown:
+                b = rep.timeframe_breakdown[tf].bias.value
+                c = get_bias_color(rep.timeframe_breakdown[tf].bias)
+                mtf_items.append(f"{tf.upper()}: [{c}]{b}[/{c}]")
+        left_table.add_row("MTF Confluence", " | ".join(mtf_items))
+    else:
+        left_table.add_row("Structure", f"[{color}]{res.bias}[/{color}] - {res.trend_detail}")
+
+    # SMC Features (FVG, Order Block, Liquidity Sweeps)
+    smc = res.smc_report
+    if smc:
+        active_fvgs = getattr(smc, "active_bullish_fvgs", []) + getattr(smc, "active_bearish_fvgs", [])
+        if active_fvgs:
+            f = active_fvgs[0]
+            fc = "green" if getattr(f, "bias", BiasType.BULLISH) == BiasType.BULLISH else "red"
+            left_table.add_row("Active FVG", f"[{fc}]${f.bottom:,.0f} - ${f.top:,.0f} (CE: ${f.midpoint:,.0f})[/{fc}]")
+        else:
+            left_table.add_row("Active FVG", "[dim]None active[/dim]")
+
+        active_obs = getattr(smc, "active_bullish_obs", []) + getattr(smc, "active_bearish_obs", [])
+        if active_obs:
+            ob = active_obs[0]
+            oc = "green" if getattr(ob, "bias", BiasType.BULLISH) == BiasType.BULLISH else "red"
+            stag = "Breaker" if getattr(ob, "is_breaker", False) else "Fresh"
+            left_table.add_row("Order Block", f"[{oc}]${ob.bottom:,.0f} - ${ob.top:,.0f} ({stag})[/{oc}]")
+        else:
+            left_table.add_row("Order Block", "[dim]None active[/dim]")
+
+        sweeps = getattr(smc, "recent_sweeps", [])
+        if sweeps:
+            sw = sweeps[-1]
+            sc = "green" if getattr(sw, "bias", BiasType.BULLISH) == BiasType.BULLISH else "red"
+            left_table.add_row("Liquidity", f"[{sc}]{sw.sweep_type.value} (${sw.sweep_level:,.0f})[/{sc}]")
+
+    # S/R Channels & Volume State
+    res_str = f"${res.nearest_resistance:,.2f}" if res.nearest_resistance else "N/A"
+    sup_str = f"${res.nearest_support:,.2f}" if res.nearest_support else "N/A"
+    left_table.add_row("S/R Channels", f"[red]Res: {res_str}[/red] | [green]Sup: {sup_str}[/green]")
+    left_table.add_row("Volume / Mom", f"{res.volume_state} | Mom: {res.momentum_streak}b")
+
+    # ML Radar Probabilities
+    if res.ml_result:
+        ml = res.ml_result
+        p_str = f"[green]Bull {ml.prob_bullish*100:.0f}%[/green] | [red]Bear {ml.prob_bearish*100:.0f}%[/red] | [yellow]Neu {ml.prob_neutral*100:.0f}%[/yellow]"
+        left_table.add_row("ML Radar", p_str)
+
+    left_panel = Panel(left_table, title="[bold cyan]1. MARKET STRUCTURE & CONFLUENCE[/bold cyan]", border_style="cyan", box=box.ROUNDED)
+
+    # 3. Right Column: Actionable Trade Setup Plan
+    setup = res.trade_setup
+    if setup:
+        s_color = "green" if setup.direction == "LONG" else "red"
+        right_table = Table(box=box.SIMPLE, show_header=False, expand=True, padding=(0, 1))
+        right_table.add_column("Key", style="bold white", width=14)
+        right_table.add_column("Value")
+
+        # Dynamic State Machine Execution Banner
+        if setup.execution_state == "CONFIRMED_ENTRY_TRIGGER":
+            b_style = "bold black on bright_green"
+            b_text = f" 🚨 CONFIRMED ENTRY: EXECUTE {setup.direction} NOW! 🚨 "
+        elif setup.execution_state == "WAITING_FOR_PRICE":
+            b_style = "bold black on yellow"
+            b_text = " ⏳ DO NOT CHASE — WAITING FOR RETRACEMENT ⏳ "
+        elif setup.execution_state == "TARGET_HIT":
+            b_style = "bold black on bright_green"
+            b_text = " 🎯 TARGET HIT — SCALE OUT & SECURE PROFITS 🎯 "
+        elif setup.execution_state == "INVALIDATED":
+            b_style = "bold white on red"
+            b_text = " ❌ SETUP INVALIDATED — PRICE HIT STOP LOSS ❌ "
+        else:
+            b_style = "bold white on dark_orange"
+            b_text = " ⚠️ IN ENTRY ZONE — CONFIRMING REACTION ⚠️ "
+
+        right_table.add_row("Execution", f"[{b_style}]{b_text}[/{b_style}]")
+        right_table.add_row("Setup Plan", f"[bold {s_color}]{setup.direction}[/bold {s_color}] {setup.setup_type.value} | Effective R:R [yellow]1:{setup.effective_rr:.2f}[/yellow]")
+        right_table.add_row("Entry Target", f"[bold cyan]${setup.entry_price:,.2f}[/bold cyan] (Dist: [yellow]{setup.entry_distance_pct:+.2f}%[/yellow])")
+        right_table.add_row("Stop Loss", f"[red]${setup.stop_loss:,.2f}[/red]")
+        right_table.add_row("Take Profits", f"[green]TP1: ${setup.tp1_price:,.2f}[/green] | [bold green]TP2: ${setup.tp2_price:,.2f}[/bold green]")
+        right_table.add_row("Hit Chance", f"[bold cyan]TP1: {setup.tp1_probability}%[/bold cyan] | [bold cyan]TP2: {setup.tp2_probability}%[/bold cyan]")
+        right_table.add_row("Risk & Size", f"[yellow]Risk: {setup.recommended_risk_pct}%[/yellow] | Size ($10k): [white]${setup.position_size_usd:,.2f}[/white]")
+        right_panel = Panel(right_table, title=f"[{s_color}]2. ACTIONABLE TRADE SETUP [{setup.direction}][/{s_color}]", border_style=s_color, box=box.ROUNDED)
+    else:
+        right_content = (
+            "\n[bold yellow]No trade setup currently passes strict R:R >= 1.80 filter.[/bold yellow]\n\n"
+            f"[dim]Current Price: ${res.current_price:,.2f} | Confluence: {res.bias} ({res.confidence}%)\n"
+            "Monitoring incoming candles waiting for high-expectancy FVG / OB retest...[/dim]\n"
         )
+        right_panel = Panel(right_content, title="[yellow]2. TRADE SETUP [CAPITAL PRESERVATION][/yellow]", border_style="yellow", box=box.ROUNDED)
+
+    body_grid = Table.grid(expand=True)
+    body_grid.add_column(ratio=1)
+    body_grid.add_column(ratio=1)
+    body_grid.add_row(left_panel, right_panel)
 
     footer = Text.from_markup(
-        "[dim white]-- Live WebSocket Active | Zero-Flicker Continuous Monitor | Press Ctrl+C to return to Chat --[/dim white]",
+        "[dim white]-- Live WebSocket Active | In-Place Fixed Cockpit (No Blink, No Scroll) | Press Ctrl+C to return to Chat --[/dim white]",
         justify="center"
     )
-    items.append(footer)
-    return Group(*items)
+
+    return Group(header_panel, body_grid, footer)
 
 
 # ============================================================================
-# Live Streaming Watcher Mode (100% Zero Flicker)
+# Live Streaming Watcher Mode (100% Zero Flicker & Zero Scroll)
 # ============================================================================
 
 def run_live_stream(symbol: str, timeframe: str, engine: PriceActionEngine, client: BinanceClient):
     """
-    Streams live real-time candle updates cleanly with 100% ZERO FLICKER / NO SCREEN BLINKING.
-    Uses Rich Live in-place buffer re-rendering without invoking os.system('cls').
+    Streams live real-time candle updates cleanly with 100% ZERO FLICKER and ZERO SCROLL.
+    Uses Rich Live in alternate screen buffer mode (screen=True, vertical_overflow="crop")
+    without invoking os.system('cls'), completely preventing repeating borders or scrolling drift.
     """
-    clear_screen()
     initial_res = engine.analyze(symbol, timeframe)
     if not initial_res:
         try:
@@ -431,7 +528,7 @@ def run_live_stream(symbol: str, timeframe: str, engine: PriceActionEngine, clie
     if HAS_RICH and Live is not None and initial_res:
         current_renderable = build_cockpit_renderable(initial_res)
         try:
-            with Live(current_renderable, console=console, refresh_per_second=4, auto_refresh=False) as live:
+            with Live(current_renderable, console=console, screen=True, auto_refresh=False, vertical_overflow="crop") as live:
                 while client.is_running:
                     now = time.time()
                     should_refresh = False

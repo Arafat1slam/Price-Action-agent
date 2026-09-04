@@ -2,6 +2,9 @@
 title Live Price Action Assistant - AI Cockpit v2.0
 cd /d %~dp0
 
+:: Set optimal window dimensions (120 columns x 35 lines)
+mode con: cols=120 lines=35 >nul 2>&1
+
 :: Enable Windows UTF-8 code page & VT100 processing
 chcp 65001 >nul 2>&1
 reg add HKCU\Console /v VirtualTerminalLevel /t REG_DWORD /d 1 /f >nul 2>&1
