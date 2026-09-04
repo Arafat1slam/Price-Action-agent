@@ -336,7 +336,9 @@ class ConfluenceEngine:
         Also produces detailed TimeframeConfluence breakdowns.
         """
         breakdowns: Dict[str, TimeframeConfluence] = {}
-        all_tfs = ["1d", "4h", "1h", "15m"]
+        all_tfs = ["4h", "1h", "15m", "5m"]
+        if "1d" in tf_data:
+            all_tfs.insert(0, "1d")
 
         scores = {}
         for tf in all_tfs:
@@ -355,8 +357,20 @@ class ConfluenceEngine:
                 key_signals=signals
             )
 
-        # S_HTF = 0.60 * Bias_4h + 0.40 * Bias_1d
-        s_htf = 0.60 * scores.get("4h", 0.0) + 0.40 * scores.get("1d", 0.0)
+        # Multi-timeframe synthesis weights:
+        # 4h (Macro structure & order flow): 35%
+        # 1h (Intermediate trend & key levels): 30%
+        # 15m (Structural confirmation & FVG/OB): 20%
+        # 5m (Micro execution & momentum trigger): 15%
+        s_htf = (
+            0.35 * scores.get("4h", 0.0) +
+            0.30 * scores.get("1h", 0.0) +
+            0.20 * scores.get("15m", 0.0) +
+            0.15 * scores.get("5m", 0.0)
+        )
+        if "1d" in scores:
+            s_htf = 0.85 * s_htf + 0.15 * scores["1d"]
+
         s_htf = float(np.clip(s_htf, -1.0, 1.0))
 
         if s_htf >= 0.50:
@@ -447,6 +461,11 @@ class ConfluenceEngine:
             ema = pd.Series(close).ewm(span=mult).mean().iloc[-1]
             score = 0.5 if curr_c > ema else -0.5
             signals.append("Execution Momentum Aligned" if curr_c > ema else "Execution Momentum Opposed")
+        elif tf_name == "5m":
+            mult = min(n, 5)
+            ema = pd.Series(close).ewm(span=mult).mean().iloc[-1]
+            score = 0.5 if curr_c > ema else -0.5
+            signals.append("Micro Trigger Aligned" if curr_c > ema else "Micro Trigger Opposed")
         else:
             score = 0.0
             signals.append("Baseline Structure")

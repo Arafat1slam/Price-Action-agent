@@ -385,12 +385,12 @@ def build_cockpit_renderable(res: AnalysisResult) -> Group:
     rep = res.confluence_report
     if rep and rep.timeframe_breakdown:
         mtf_items = []
-        for tf in ["1d", "4h", "1h", "15m"]:
+        for tf in ["4h", "1h", "15m", "5m"]:
             if tf in rep.timeframe_breakdown:
                 b = rep.timeframe_breakdown[tf].bias.value
                 c = get_bias_color(rep.timeframe_breakdown[tf].bias)
                 mtf_items.append(f"{tf.upper()}: [{c}]{b}[/{c}]")
-        left_table.add_row("MTF Confluence", " | ".join(mtf_items))
+        left_table.add_row("MTF (4h/1h/15m/5m)", " | ".join(mtf_items))
     else:
         left_table.add_row("Structure", f"[{color}]{res.bias}[/{color}] - {res.trend_detail}")
 
@@ -499,10 +499,14 @@ def run_live_stream(symbol: str, timeframe: str, engine: PriceActionEngine, clie
     without invoking os.system('cls'), completely preventing repeating borders or scrolling drift.
     """
     initial_res = engine.analyze(symbol, timeframe)
-    if not initial_res:
+    if not initial_res or not getattr(engine, "mtf_buffers", {}):
         try:
-            df = client.fetch_historical_klines(limit=100)
-            engine.set_history(df)
+            mtf_dfs = client.fetch_multi_timeframe_klines(intervals=["5m", "15m", "1h", "4h"], limit=100)
+            if mtf_dfs:
+                engine.set_multi_history(mtf_dfs, primary_tf=timeframe)
+            else:
+                df = client.fetch_historical_klines(limit=100)
+                engine.set_history(df, timeframe=timeframe)
             initial_res = engine.analyze(symbol, timeframe)
         except Exception:
             pass
@@ -631,8 +635,12 @@ def run_interactive_assistant(default_symbol: str = "BTCUSDT", default_timeframe
 
         client = BinanceClient(symbol=sym, interval=tf)
         try:
-            hist_df = client.fetch_historical_klines(limit=150)
-            engine.set_history(hist_df)
+            mtf_dfs = client.fetch_multi_timeframe_klines(intervals=["5m", "15m", "1h", "4h"], limit=150)
+            if mtf_dfs:
+                engine.set_multi_history(mtf_dfs, primary_tf=tf)
+            else:
+                hist_df = client.fetch_historical_klines(limit=150)
+                engine.set_history(hist_df, timeframe=tf)
         except Exception as e:
             local_file = os.path.join("data", "historical", f"{sym}_{tf}.csv")
             if os.path.exists(local_file):
@@ -969,8 +977,12 @@ def main():
         engine = PriceActionEngine(max_candles=DEFAULT_CANDLE_LIMIT)
         client = BinanceClient(symbol=sym, interval=tf)
         try:
-            df = client.fetch_historical_klines(limit=150)
-            engine.set_history(df)
+            mtf_dfs = client.fetch_multi_timeframe_klines(intervals=["5m", "15m", "1h", "4h"], limit=150)
+            if mtf_dfs:
+                engine.set_multi_history(mtf_dfs, primary_tf=tf)
+            else:
+                df = client.fetch_historical_klines(limit=150)
+                engine.set_history(df, timeframe=tf)
             run_live_stream(sym, tf, engine, client)
         except Exception as e:
             print(f"Streaming error: {e}")
@@ -991,8 +1003,12 @@ def main():
         engine = PriceActionEngine(max_candles=DEFAULT_CANDLE_LIMIT)
         client = BinanceClient(symbol=symbol, interval=timeframe)
         try:
-            df = client.fetch_historical_klines(limit=150)
-            engine.set_history(df)
+            mtf_dfs = client.fetch_multi_timeframe_klines(intervals=["5m", "15m", "1h", "4h"], limit=150)
+            if mtf_dfs:
+                engine.set_multi_history(mtf_dfs, primary_tf=timeframe)
+            else:
+                df = client.fetch_historical_klines(limit=150)
+                engine.set_history(df, timeframe=timeframe)
             run_live_stream(symbol, timeframe, engine, client)
         except Exception as e:
             logger.error(f"Streaming startup error: {e}")

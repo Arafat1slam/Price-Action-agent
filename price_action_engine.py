@@ -98,6 +98,7 @@ class PriceActionEngine:
         self.df: pd.DataFrame = pd.DataFrame(
             columns=["timestamp", "open", "high", "low", "close", "volume", "is_closed"]
         )
+        self.mtf_buffers: Dict[str, pd.DataFrame] = {}
         self.smc_engine = SMCEngine()
         self.chart_pattern_engine = ChartPatternEngine()
         self.ml_predictor = MLPredictor()
@@ -108,8 +109,8 @@ class PriceActionEngine:
         )
         self.trade_setup_engine = TradeSetupEngine()
 
-    def set_history(self, df: pd.DataFrame):
-        """Seed the engine with historical candles."""
+    def set_history(self, df: pd.DataFrame, timeframe: str = "1h"):
+        """Seed the engine with historical candles for a specific or default timeframe."""
         if df.empty:
             return
         df_copy = df.tail(self.max_candles).copy().reset_index(drop=True)
@@ -117,12 +118,52 @@ class PriceActionEngine:
             if col in df_copy.columns:
                 df_copy[col] = pd.to_numeric(df_copy[col], errors="coerce").astype(float)
         self.df = df_copy
+        self.mtf_buffers[timeframe.lower()] = df_copy
 
-    def update_candle(self, candle: Dict[str, Any]):
+    def set_multi_history(self, dfs: Dict[str, pd.DataFrame], primary_tf: str = "1h"):
+        """Seed the engine with multi-timeframe candle datasets (e.g. 5m, 15m, 1h, 4h)."""
+        self.mtf_buffers = {}
+        for tf, df in dfs.items():
+            if df is not None and not df.empty:
+                df_copy = df.tail(self.max_candles).copy().reset_index(drop=True)
+                for col in ["open", "high", "low", "close", "volume"]:
+                    if col in df_copy.columns:
+                        df_copy[col] = pd.to_numeric(df_copy[col], errors="coerce").astype(float)
+                self.mtf_buffers[tf.lower()] = df_copy
+
+        p_tf = primary_tf.lower()
+        if p_tf in self.mtf_buffers:
+            self.df = self.mtf_buffers[p_tf]
+        elif self.mtf_buffers:
+            first_tf = next(iter(self.mtf_buffers))
+            self.df = self.mtf_buffers[first_tf]
+
+    def update_candle(self, candle: Dict[str, Any], timeframe: Optional[str] = None):
         """
         Updates the engine's rolling buffer with a live streaming candle update.
-        Replaces forming candle if timestamp matches, or appends if new period.
+        Maintains both primary buffer and multi-timeframe buffers (5m, 15m, 1h, 4h).
         """
+        intv = (timeframe or candle.get("interval") or "1h").lower()
+        if intv not in self.mtf_buffers:
+            self.mtf_buffers[intv] = pd.DataFrame([candle])
+        else:
+            tf_df = self.mtf_buffers[intv]
+            if not tf_df.empty:
+                last_idx = len(tf_df) - 1
+                last_ts = tf_df.loc[last_idx, "timestamp"]
+                if candle["timestamp"] == last_ts:
+                    for key in ["open", "high", "low", "close", "volume", "is_closed"]:
+                        if key in candle:
+                            tf_df.loc[last_idx, key] = candle[key]
+                elif candle["timestamp"] > last_ts:
+                    new_row = pd.DataFrame([candle])
+                    self.mtf_buffers[intv] = pd.concat([tf_df, new_row], ignore_index=True)
+                    if len(self.mtf_buffers[intv]) > self.max_candles:
+                        self.mtf_buffers[intv] = self.mtf_buffers[intv].iloc[-self.max_candles:].reset_index(drop=True)
+            else:
+                self.mtf_buffers[intv] = pd.DataFrame([candle])
+
+        # Also update primary df
         if self.df.empty:
             new_row = pd.DataFrame([candle])
             self.df = new_row
@@ -130,14 +171,11 @@ class PriceActionEngine:
 
         last_idx = len(self.df) - 1
         last_ts = self.df.loc[last_idx, "timestamp"]
-
-        # If the incoming candle has the same timestamp as the last candle in buffer
         if candle["timestamp"] == last_ts:
             for key in ["open", "high", "low", "close", "volume", "is_closed"]:
                 if key in candle:
                     self.df.loc[last_idx, key] = candle[key]
         elif candle["timestamp"] > last_ts:
-            # New candle period started
             new_row = pd.DataFrame([candle])
             self.df = pd.concat([self.df, new_row], ignore_index=True)
             if len(self.df) > self.max_candles:
@@ -192,9 +230,10 @@ class PriceActionEngine:
         ml_res: Optional[MLInferenceResult] = None
 
         try:
+            confluence_data = self.mtf_buffers if self.mtf_buffers else df
             confluence_rep = self.confluence_engine.analyze(
                 symbol=symbol,
-                data=df,
+                data=confluence_data,
                 current_price=current_price,
                 is_closed=is_closed,
                 primary_timeframe=timeframe,
