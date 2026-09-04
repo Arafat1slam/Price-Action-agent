@@ -73,7 +73,8 @@ from config import (
 from symbol_mapper import resolve_symbol, suggest_symbols
 from binance_client import BinanceClient
 from price_action_engine import PriceActionEngine, AnalysisResult
-from core.models import BiasType, SetupType, TradeSetup
+from core.models import BiasType, SetupType, TradeSetup, TradeQualityScore, QualityGrade, PositionState, ActivePosition
+from engines.trade_setup_engine import PositionStateManager
 
 
 def clear_screen():
@@ -277,6 +278,23 @@ def create_trade_setup_card(res: AnalysisResult) -> Panel:
         )
         prob_grid.add_row(prob_col1, prob_col2)
 
+        # Quality Score Panel
+        quality_items = []
+        qs = setup.quality_score
+        if qs:
+            g_col = "bold green" if qs.grade in (QualityGrade.A_PLUS, QualityGrade.A) else ("bold yellow" if qs.grade == QualityGrade.B else "bold red")
+            q_bar = make_progress_bar(int(qs.raw_score), width=15)
+            quality_items.append(
+                Panel(
+                    f"[{g_col}]Grade: {qs.grade.value} ({qs.raw_score:.0f}/100)[/{g_col}] [dim][{q_bar}][/dim]\n"
+                    f"[dim]SMC: {qs.smc_score:.0f} | Volume: {qs.volume_score:.0f} | Structure: {qs.structure_score:.0f} | MTF: {qs.mtf_score:.0f} | ML: {qs.ml_score:.0f}[/dim]",
+                    title="[bold white]TRADE QUALITY SCORE[/bold white]",
+                    border_style="dim",
+                    box=box.ROUNDED
+                )
+            )
+
+
         track = f"[red][SL ${setup.stop_loss:,.0f}][/red] <---> [cyan][ENTRY ${setup.entry_price:,.0f}][/cyan] --------> [green][TP1 ${setup.tp1_price:,.0f} ({setup.tp1_probability}%)] [/green] ------------> [bold green][TP2 ${setup.tp2_price:,.0f} ({setup.tp2_probability}%)] [/bold green]"
 
         return Panel(
@@ -286,6 +304,7 @@ def create_trade_setup_card(res: AnalysisResult) -> Panel:
                 grid,
                 Text(""),
                 Panel(prob_grid, title="[bold white]PROBABILITY & RISK SIZING (CAPITAL PROTECTION)[/bold white]", border_style="dim", box=box.ROUNDED),
+                *quality_items,
                 Text(""),
                 Text.from_markup(track, justify="center")
             ),
@@ -358,7 +377,7 @@ def render_text_cockpit(res: AnalysisResult, logs: Optional[List[str]] = None):
     print_single_report(res)
 
 
-def build_cockpit_renderable(res: AnalysisResult) -> Group:
+def build_cockpit_renderable(res: AnalysisResult, position_manager: Optional[PositionStateManager] = None) -> Group:
     """
     Builds an ultra-compact (~17 line), fixed-height composite cockpit renderable
     for 100% zero-flicker and zero-scroll live streaming on Windows consoles.
@@ -471,6 +490,14 @@ def build_cockpit_renderable(res: AnalysisResult) -> Group:
         right_table.add_row("Stop Loss", f"[red]${setup.stop_loss:,.2f}[/red]")
         right_table.add_row("Take Profits", f"[green]TP1: ${setup.tp1_price:,.2f}[/green] | [bold green]TP2: ${setup.tp2_price:,.2f}[/bold green]")
         right_table.add_row("Hit Chance", f"[bold cyan]TP1: {setup.tp1_probability}%[/bold cyan] | [bold cyan]TP2: {setup.tp2_probability}%[/bold cyan]")
+
+        # Quality Score Display
+        qs = setup.quality_score
+        if qs:
+            g_col = "bold green" if qs.grade in (QualityGrade.A_PLUS, QualityGrade.A) else ("bold yellow" if qs.grade == QualityGrade.B else "bold red")
+            q_bar = make_progress_bar(int(qs.raw_score), width=10)
+            right_table.add_row("Quality Score", f"[{g_col}]{qs.grade.value} ({qs.raw_score:.0f}/100)[/{g_col}] [dim][{q_bar}][/dim]")
+
         right_table.add_row("Risk & Size", f"[yellow]Risk: {setup.recommended_risk_pct}%[/yellow] | Size ($10k): [white]${setup.position_size_usd:,.2f}[/white]")
         right_panel = Panel(right_table, title=f"[{s_color}]2. ACTIONABLE TRADE SETUP [{setup.direction}][/{s_color}]", border_style=s_color, box=box.ROUNDED)
     else:
@@ -486,12 +513,40 @@ def build_cockpit_renderable(res: AnalysisResult) -> Group:
     body_grid.add_column(ratio=1)
     body_grid.add_row(left_panel, right_panel)
 
+    # Position State Panel (Phase 6)
+    position_elements = []
+    if position_manager and position_manager.has_open_trade:
+        pos = position_manager.active_position
+        p_col = "green" if pos.direction == "LONG" else "red"
+        pnl_col = "green" if pos.current_pnl_pct >= 0 else "red"
+        rr_bar = make_progress_bar(min(100, int(pos.current_rr * 33)), width=8)
+        pos_text = (
+            f"[{p_col} bold]{pos.direction}[/{p_col} bold] {pos.symbol} | "
+            f"Entry: [cyan]${pos.entry_price:,.2f}[/cyan] | "
+            f"P&L: [{pnl_col}]{pos.current_pnl_pct:+.2f}%[/{pnl_col}] | "
+            f"R:R: [{pnl_col}]{pos.current_rr:.2f}R[/{pnl_col}] [dim][{rr_bar}][/dim] | "
+            f"Peak: {pos.peak_rr:.2f}R"
+        )
+
+        if pos.reversal_warning:
+            warn_banner = Panel(
+                f"[bold white on red]  ⚠️ WARNING: EARLY REVERSAL DETECTED — CONSIDER CLOSING/SECURING PROFIT  [/bold white on red]\n"
+                f"[bold yellow]{pos.reversal_reason}[/bold yellow]",
+                border_style="red",
+                box=box.ROUNDED,
+            )
+            position_elements.append(warn_banner)
+
+        position_elements.append(
+            Panel(pos_text, title=f"[{p_col}]3. OPEN POSITION MONITOR[/{p_col}]", border_style=p_col, box=box.ROUNDED)
+        )
+
     footer = Text.from_markup(
         "[dim white]-- Live WebSocket Active | In-Place Fixed Cockpit (No Blink, No Scroll) | Press Ctrl+C to return to Chat --[/dim white]",
         justify="center"
     )
 
-    return Group(header_panel, body_grid, footer)
+    return Group(header_panel, body_grid, *position_elements, footer)
 
 
 # ============================================================================

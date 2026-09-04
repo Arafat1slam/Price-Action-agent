@@ -16,7 +16,7 @@ from engines.chart_pattern_engine import ChartPatternEngine
 from engines.ml_predictor import MLPredictor, FeatureExtractor
 from engines.ml_engine import LabelGenerator, ModelTrainer, PurgedTimeSeriesSplit
 from engines.confluence_engine import ConfluenceEngine
-from engines.trade_setup_engine import TradeSetupEngine
+from engines.trade_setup_engine import TradeSetupEngine, PositionStateManager
 from engines.backtest_engine import (
     BacktestEngine,
     BacktestConfig,
@@ -58,5 +58,6 @@ __all__ = [
     "TradeSignal",
     "TradeSide",
     "ExitReason",
+    "PositionStateManager",
 ]
 

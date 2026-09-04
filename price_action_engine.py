@@ -253,6 +253,15 @@ class PriceActionEngine:
             chart_pats = self.chart_pattern_engine.detect_all(df)
             ml_res = self.ml_predictor.predict(df)
             regime_rep = self.regime_engine.detect_regime(df)
+
+            # Auto-compute trade quality score if a setup was generated
+            if trade_setup is not None:
+                self.trade_setup_engine.score_trade_quality(
+                    setup=trade_setup,
+                    confluence_report=confluence_rep,
+                    regime_report=regime_rep,
+                    ml_result=ml_res,
+                )
         except Exception:
             pass
 

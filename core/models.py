@@ -187,3 +187,52 @@ class TradeSetup:
     execution_state: str = "WAITING_FOR_PRICE" # "WAITING_FOR_PRICE", "IN_ENTRY_ZONE", "CONFIRMED_ENTRY_TRIGGER"
     entry_distance_pct: float = 0.0         # Distance from current price to entry (%): e.g. -0.45%
     entry_action: str = ""                  # Actionable instruction (WAIT vs ENTER NOW)
+    quality_score: Optional['TradeQualityScore'] = None  # Unified 0-100 quality score
+
+
+class QualityGrade(str, Enum):
+    A_PLUS = "A+"    # ≥ 85 — Elite institutional setup
+    A = "A"          # ≥ 75 — High-quality setup
+    B = "B"          # ≥ 65 — Good setup, moderate confidence
+    C = "C"          # ≥ 45 — Marginal setup, use caution
+    FILTERED = "FILTERED"  # < 45 — Below quality threshold, do not trade
+
+
+@dataclass
+class TradeQualityScore:
+    """Unified 0–100 trade quality score combining 5 analytical dimensions."""
+    raw_score: float             # 0.0 – 100.0 composite score
+    grade: QualityGrade          # Letter grade mapped from raw_score
+    smc_score: float             # 0–100 SMC component (25% weight)
+    volume_score: float          # 0–100 Volume/VSA component (20% weight)
+    structure_score: float       # 0–100 Structure/Regime component (20% weight)
+    mtf_score: float             # 0–100 Multi-Timeframe component (20% weight)
+    ml_score: float              # 0–100 ML Prediction component (15% weight)
+    component_breakdown: Dict[str, float] = field(default_factory=dict)  # Weighted contributions
+
+
+class PositionState(str, Enum):
+    FLAT = "FLAT"                # No open position
+    OPEN_LONG = "OPEN_LONG"      # Long position active
+    OPEN_SHORT = "OPEN_SHORT"    # Short position active
+    PARTIAL_TP1 = "PARTIAL_TP1"  # TP1 hit, partial close, trailing remainder
+
+
+@dataclass
+class ActivePosition:
+    """Tracks a live open position for whipsaw prevention and reversal warnings."""
+    position_id: str
+    symbol: str
+    direction: str               # "LONG" or "SHORT"
+    entry_price: float
+    stop_loss: float
+    tp1_price: float
+    tp2_price: float
+    entry_time: Any
+    current_price: float = 0.0
+    current_pnl_pct: float = 0.0
+    current_rr: float = 0.0      # Current R:R achieved (e.g. 1.5 means 1.5R profit)
+    state: PositionState = PositionState.OPEN_LONG
+    reversal_warning: bool = False
+    reversal_reason: str = ""
+    peak_rr: float = 0.0         # Highest R:R reached during this trade

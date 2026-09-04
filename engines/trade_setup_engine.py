@@ -29,6 +29,13 @@ from core.models import (
     ChartPattern,
     ExecutionState,
     TradeStyle,
+    TradeQualityScore,
+    QualityGrade,
+    PositionState,
+    ActivePosition,
+    RegimeReport,
+    MarketRegime,
+    MLInferenceResult,
 )
 
 
@@ -786,3 +793,405 @@ class TradeSetupEngine:
                                    np.abs(low[1:] - close[:-1])))
         atr = float(np.mean(tr[-period:])) if len(tr) >= period else float(np.mean(tr))
         return max(1e-6, atr)
+
+    # ========================================================================
+    # Phase 5: Unified Trade Quality Scoring (0–100)
+    # ========================================================================
+    def score_trade_quality(
+        self,
+        setup: TradeSetup,
+        confluence_report: Optional[ConfluenceReport] = None,
+        regime_report: Optional[RegimeReport] = None,
+        ml_result: Optional[MLInferenceResult] = None,
+    ) -> TradeQualityScore:
+        """
+        Computes a unified 0–100 trade quality score from 5 dimensions:
+          SMC (25%) + Volume/VSA (20%) + Structure/Regime (20%) + MTF (20%) + ML (15%)
+        Maps the composite to a letter grade: A+ (≥85), A (≥75), B (≥65), C (≥45), FILTERED (<45).
+        """
+        smc_score = self._score_smc_component(setup, confluence_report)
+        volume_score = self._score_volume_component(confluence_report)
+        structure_score = self._score_structure_component(setup, regime_report)
+        mtf_score = self._score_mtf_component(confluence_report)
+        ml_score = self._score_ml_component(setup, ml_result)
+
+        # Weighted composite
+        raw = (
+            smc_score * 0.25
+            + volume_score * 0.20
+            + structure_score * 0.20
+            + mtf_score * 0.20
+            + ml_score * 0.15
+        )
+        raw = round(min(100.0, max(0.0, raw)), 1)
+
+        grade = self._map_grade(raw)
+
+        breakdown = {
+            "SMC (25%)": round(smc_score * 0.25, 1),
+            "Volume (20%)": round(volume_score * 0.20, 1),
+            "Structure (20%)": round(structure_score * 0.20, 1),
+            "MTF (20%)": round(mtf_score * 0.20, 1),
+            "ML (15%)": round(ml_score * 0.15, 1),
+        }
+
+        qs = TradeQualityScore(
+            raw_score=raw,
+            grade=grade,
+            smc_score=round(smc_score, 1),
+            volume_score=round(volume_score, 1),
+            structure_score=round(structure_score, 1),
+            mtf_score=round(mtf_score, 1),
+            ml_score=round(ml_score, 1),
+            component_breakdown=breakdown,
+        )
+        setup.quality_score = qs
+        return qs
+
+    @staticmethod
+    def _map_grade(raw: float) -> QualityGrade:
+        if raw >= 85:
+            return QualityGrade.A_PLUS
+        elif raw >= 75:
+            return QualityGrade.A
+        elif raw >= 65:
+            return QualityGrade.B
+        elif raw >= 45:
+            return QualityGrade.C
+        else:
+            return QualityGrade.FILTERED
+
+    def _score_smc_component(
+        self, setup: TradeSetup, rep: Optional[ConfluenceReport]
+    ) -> float:
+        """SMC component (0–100): FVG, Order Block, Liquidity Sweep, BOS/CHoCH."""
+        score = 0.0
+
+        # Setup type bonus
+        type_bonus = {
+            SetupType.SMC_PULLBACK_FVG: 40,
+            SetupType.SMC_ORDER_BLOCK: 38,
+            SetupType.LIQUIDITY_SWEEP_REVERSAL: 30,
+            SetupType.CHART_PATTERN_BREAKOUT: 15,
+            SetupType.VALUE_AREA_MEAN_REVERSION: 10,
+        }
+        score += type_bonus.get(setup.setup_type, 10)
+
+        if rep:
+            # Active FVGs near entry
+            if rep.active_fvgs:
+                for fvg in rep.active_fvgs[:3]:
+                    if not fvg.is_mitigated:
+                        score += 10
+                        break
+
+            # Active Order Blocks near entry
+            if rep.active_obs:
+                for ob in rep.active_obs[:3]:
+                    if not ob.is_mitigated and not ob.is_invalidated:
+                        score += 10
+                        break
+
+            # Market structure alignment (BOS/CHoCH)
+            if rep.smc_state:
+                if setup.direction == "LONG" and rep.smc_state.trend == "UPTREND":
+                    score += 15
+                elif setup.direction == "SHORT" and rep.smc_state.trend == "DOWNTREND":
+                    score += 15
+                elif rep.smc_state.recent_choch:
+                    # CHoCH reversal alignment
+                    if setup.direction == "LONG" and "BULLISH" in (rep.smc_state.recent_choch or ""):
+                        score += 20
+                    elif setup.direction == "SHORT" and "BEARISH" in (rep.smc_state.recent_choch or ""):
+                        score += 20
+
+            # R:R quality bonus
+            if setup.effective_rr >= 3.0:
+                score += 15
+            elif setup.effective_rr >= 2.5:
+                score += 10
+            elif setup.effective_rr >= 2.0:
+                score += 5
+
+        return min(100.0, score)
+
+    def _score_volume_component(self, rep: Optional[ConfluenceReport]) -> float:
+        """Volume/VSA component (0–100): Volume profile, VSA patterns."""
+        score = 50.0  # Baseline
+
+        if rep:
+            # Volume Profile alignment
+            if rep.volume_profile:
+                vp = rep.volume_profile
+                if vp.total_volume > 0:
+                    score += 15
+                if vp.poc_price > 0:
+                    score += 10
+
+            # Overall confluence confidence as proxy for volume quality
+            if rep.confidence_score >= 80:
+                score += 20
+            elif rep.confidence_score >= 65:
+                score += 10
+
+        return min(100.0, score)
+
+    def _score_structure_component(
+        self, setup: TradeSetup, regime: Optional[RegimeReport]
+    ) -> float:
+        """Structure/Regime component (0–100): Market regime alignment."""
+        score = 40.0  # Baseline
+
+        if regime:
+            # Regime-direction alignment
+            if setup.direction == "LONG":
+                if regime.regime == MarketRegime.TRENDING_BULL:
+                    score += 40
+                elif regime.regime == MarketRegime.BREAKOUT:
+                    score += 25
+                elif regime.regime == MarketRegime.RANGING:
+                    score += 10
+                elif regime.regime == MarketRegime.HIGH_VOLATILITY_CHOP:
+                    score -= 15
+                elif regime.regime == MarketRegime.TRENDING_BEAR:
+                    score -= 20
+            else:  # SHORT
+                if regime.regime == MarketRegime.TRENDING_BEAR:
+                    score += 40
+                elif regime.regime == MarketRegime.BREAKOUT:
+                    score += 25
+                elif regime.regime == MarketRegime.RANGING:
+                    score += 10
+                elif regime.regime == MarketRegime.HIGH_VOLATILITY_CHOP:
+                    score -= 15
+                elif regime.regime == MarketRegime.TRENDING_BULL:
+                    score -= 20
+
+            # ADX strength bonus
+            if regime.adx >= 30:
+                score += 15
+            elif regime.adx >= 20:
+                score += 5
+
+        return min(100.0, max(0.0, score))
+
+    def _score_mtf_component(self, rep: Optional[ConfluenceReport]) -> float:
+        """Multi-Timeframe component (0–100): HTF/LTF alignment."""
+        score = 30.0  # Baseline
+
+        if rep and rep.timeframe_breakdown:
+            aligned = 0
+            total = 0
+            overall = rep.overall_bias
+
+            for tf_name, tf_conf in rep.timeframe_breakdown.items():
+                total += 1
+                if tf_conf.bias == overall:
+                    aligned += 1
+                elif tf_conf.bias == BiasType.NEUTRAL:
+                    aligned += 0.5
+
+            if total > 0:
+                alignment_pct = aligned / total
+                score += alignment_pct * 60
+
+            # HTF-LTF alignment bonus
+            if rep.htf_bias == rep.ltf_trigger:
+                score += 10
+
+        elif rep:
+            # Fallback: use confidence score
+            score = rep.confidence_score * 0.8
+
+        return min(100.0, max(0.0, score))
+
+    def _score_ml_component(
+        self, setup: TradeSetup, ml: Optional[MLInferenceResult]
+    ) -> float:
+        """ML Prediction component (0–100): Model probability alignment."""
+        if not ml:
+            return 50.0  # Neutral when no ML available
+
+        score = 20.0
+
+        if setup.direction == "LONG":
+            prob = ml.prob_bullish
+        else:
+            prob = ml.prob_bearish
+
+        # Scale probability to score contribution
+        # prob >= 0.65 → high score; prob <= 0.30 → penalty
+        if prob >= 0.70:
+            score += 60
+        elif prob >= 0.55:
+            score += 40
+        elif prob >= 0.45:
+            score += 20
+        elif prob >= 0.35:
+            score += 0
+        else:
+            score -= 10
+
+        # Model confidence bonus
+        if ml.model_confidence >= 0.25:
+            score += 20
+        elif ml.model_confidence >= 0.15:
+            score += 10
+
+        return min(100.0, max(0.0, score))
+
+
+# ============================================================================
+# Phase 6: Position-State Manager (Whipsaw Prevention & Reversal Warning)
+# ============================================================================
+
+class PositionStateManager:
+    """
+    Manages live position state to prevent whipsaw (opposite signals while
+    trade is open) and detect early reversal warnings when trade reaches
+    >= 1:1 R:R with reversal patterns emerging.
+    """
+
+    def __init__(self):
+        self.active_position: Optional[ActivePosition] = None
+        self._trade_history: List[ActivePosition] = []
+
+    @property
+    def is_flat(self) -> bool:
+        return self.active_position is None
+
+    @property
+    def has_open_trade(self) -> bool:
+        return self.active_position is not None
+
+    def open_position(self, setup: TradeSetup, current_price: float) -> ActivePosition:
+        """Creates and registers a new open position from a trade setup."""
+        pos = ActivePosition(
+            position_id=setup.setup_id,
+            symbol=setup.symbol,
+            direction=setup.direction,
+            entry_price=setup.entry_price,
+            stop_loss=setup.stop_loss,
+            tp1_price=setup.tp1_price,
+            tp2_price=setup.tp2_price,
+            entry_time=setup.timestamp,
+            current_price=current_price,
+            state=PositionState.OPEN_LONG if setup.direction == "LONG" else PositionState.OPEN_SHORT,
+        )
+        self.active_position = pos
+        return pos
+
+    def close_position(self, reason: str = "Manual close") -> Optional[ActivePosition]:
+        """Closes the active position and moves it to history."""
+        if self.active_position is None:
+            return None
+        closed = self.active_position
+        closed.state = PositionState.FLAT
+        self._trade_history.append(closed)
+        self.active_position = None
+        return closed
+
+    def update_position(
+        self,
+        current_price: float,
+        candle: Optional[Dict[str, float]] = None,
+    ) -> Optional[ActivePosition]:
+        """
+        Updates position P&L, R:R, and checks for early reversal warnings.
+        Returns the updated position or None if flat.
+        """
+        pos = self.active_position
+        if pos is None:
+            return None
+
+        pos.current_price = current_price
+        risk = abs(pos.entry_price - pos.stop_loss)
+        if risk <= 1e-8:
+            risk = 1e-8
+
+        # Calculate current R:R
+        if pos.direction == "LONG":
+            pnl = current_price - pos.entry_price
+        else:
+            pnl = pos.entry_price - current_price
+
+        pos.current_rr = round(pnl / risk, 2)
+        pos.current_pnl_pct = round((pnl / pos.entry_price) * 100, 2)
+
+        # Track peak R:R
+        if pos.current_rr > pos.peak_rr:
+            pos.peak_rr = pos.current_rr
+
+        # Check for TP1 hit → partial close state
+        if pos.direction == "LONG" and current_price >= pos.tp1_price:
+            pos.state = PositionState.PARTIAL_TP1
+        elif pos.direction == "SHORT" and current_price <= pos.tp1_price:
+            pos.state = PositionState.PARTIAL_TP1
+
+        # Check for SL hit → auto close
+        if pos.direction == "LONG" and current_price <= pos.stop_loss:
+            return self.close_position("Stop Loss hit")
+        elif pos.direction == "SHORT" and current_price >= pos.stop_loss:
+            return self.close_position("Stop Loss hit")
+
+        # Check for TP2 hit → auto close
+        if pos.direction == "LONG" and current_price >= pos.tp2_price:
+            return self.close_position("TP2 hit")
+        elif pos.direction == "SHORT" and current_price <= pos.tp2_price:
+            return self.close_position("TP2 hit")
+
+        # Early Reversal Warning: >= 1:1 R:R and signs of pullback
+        pos.reversal_warning = False
+        pos.reversal_reason = ""
+        if pos.current_rr >= 1.0 and candle:
+            h = float(candle.get("high", current_price))
+            l = float(candle.get("low", current_price))
+            o = float(candle.get("open", current_price))
+            c = float(candle.get("close", current_price))
+            rng = max(1e-8, h - l)
+
+            if pos.direction == "LONG":
+                upper_wick = (h - max(o, c)) / rng
+                is_red = c < o
+                # Pullback from peak: peak_rr was high but now dropping
+                rr_drawdown = pos.peak_rr - pos.current_rr
+                if (upper_wick >= 0.40 and is_red) or rr_drawdown >= 0.5:
+                    pos.reversal_warning = True
+                    reasons = []
+                    if upper_wick >= 0.40:
+                        reasons.append(f"Strong upper wick rejection ({upper_wick*100:.0f}%)")
+                    if is_red:
+                        reasons.append("Bearish candle forming")
+                    if rr_drawdown >= 0.5:
+                        reasons.append(f"R:R dropping from peak {pos.peak_rr:.1f}R → {pos.current_rr:.1f}R")
+                    pos.reversal_reason = " | ".join(reasons)
+            else:  # SHORT
+                lower_wick = (min(o, c) - l) / rng
+                is_green = c > o
+                rr_drawdown = pos.peak_rr - pos.current_rr
+                if (lower_wick >= 0.40 and is_green) or rr_drawdown >= 0.5:
+                    pos.reversal_warning = True
+                    reasons = []
+                    if lower_wick >= 0.40:
+                        reasons.append(f"Strong lower wick bounce ({lower_wick*100:.0f}%)")
+                    if is_green:
+                        reasons.append("Bullish candle forming")
+                    if rr_drawdown >= 0.5:
+                        reasons.append(f"R:R dropping from peak {pos.peak_rr:.1f}R → {pos.current_rr:.1f}R")
+                    pos.reversal_reason = " | ".join(reasons)
+
+        return pos
+
+    def should_suppress_signal(self, new_direction: str) -> bool:
+        """
+        Returns True if a new signal should be suppressed (whipsaw prevention).
+        Suppresses opposite-direction signals while a trade is open.
+        """
+        if self.active_position is None:
+            return False
+        return self.active_position.direction != new_direction
+
+    def get_trade_history(self) -> List[ActivePosition]:
+        """Returns list of completed trades."""
+        return list(self._trade_history)
+
