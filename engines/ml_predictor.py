@@ -171,25 +171,31 @@ class MLPredictor:
         self.load_model()
 
     def load_model(self) -> bool:
-        """Loads serialized model bundle if present on disk."""
-        if self.model_path and os.path.exists(self.model_path):
-            try:
-                self.bundle = joblib.load(self.model_path)
-                self.model = self.bundle.get("model")
-                return True
-            except Exception:
-                self.model = None
-                return False
-        elif self.model_path in ("models/price_action_ml_model.joblib", "models/price_action_model.joblib", None):
-            for path in ["models/price_action_model.joblib", "models/price_action_ml_model.joblib"]:
-                if os.path.exists(path):
-                    try:
-                        self.bundle = joblib.load(path)
-                        self.model = self.bundle.get("model")
-                        if self.model is not None:
-                            return True
-                    except Exception:
-                        pass
+        """Loads serialized model bundle if present on disk, resolving relative and absolute paths."""
+        candidate_paths = []
+        if self.model_path:
+            candidate_paths.append(self.model_path)
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            candidate_paths.append(os.path.join(base_dir, self.model_path))
+
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        candidate_paths.extend([
+            os.path.join(base_dir, "models", "price_action_ml_model.joblib"),
+            os.path.join(base_dir, "models", "price_action_model.joblib"),
+            "models/price_action_ml_model.joblib",
+            "models/price_action_model.joblib",
+        ])
+
+        for p in candidate_paths:
+            if p and os.path.exists(p):
+                try:
+                    self.bundle = joblib.load(p)
+                    self.model = self.bundle.get("model")
+                    if self.model is not None:
+                        self.model_path = p
+                        return True
+                except Exception:
+                    pass
         return False
 
     def predict(self, df_window: pd.DataFrame) -> MLInferenceResult:
