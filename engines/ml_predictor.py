@@ -170,6 +170,10 @@ class MLPredictor:
         self.feature_extractor = FeatureExtractor()
         self.load_model()
 
+    @property
+    def model_loaded(self) -> bool:
+        return self.model is not None
+
     def load_model(self) -> bool:
         """Loads serialized model bundle if present on disk, resolving relative and absolute paths."""
         candidate_paths = []
