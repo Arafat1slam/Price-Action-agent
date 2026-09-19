@@ -77,17 +77,28 @@ class TradeSetupEngine:
             SetupType.VALUE_AREA_MEAN_REVERSION: 1,
         }
 
-        # Rank candidates by: 1. Setup priority, 2. Effective R:R
-        candidates.sort(
-            key=lambda s: (
+        # Rank candidates by:
+        # 1. Actionable state: CONFIRMED_ENTRY_TRIGGER / IN_ENTRY_ZONE / WAITING_FOR_PRICE first; TARGET_HIT / INVALIDATED last
+        # 2. Setup priority (SMC FVG > OB > Sweep > Pattern > Value Area)
+        # 3. Effective R:R >= MIN_EFFECTIVE_RR
+        # 4. Effective R:R value
+        def setup_sort_key(s: TradeSetup):
+            is_actionable = s.execution_state in [
+                ExecutionState.CONFIRMED_ENTRY_TRIGGER.value,
+                ExecutionState.IN_ENTRY_ZONE.value,
+                ExecutionState.WAITING_FOR_PRICE.value
+            ]
+            return (
+                1 if is_actionable else 0,
                 setup_priority.get(s.setup_type, 0),
-                s.effective_rr >= self.min_effective_rr,
+                1 if s.effective_rr >= self.min_effective_rr else 0,
                 s.effective_rr
-            ),
-            reverse=True
-        )
+            )
+
+        candidates.sort(key=setup_sort_key, reverse=True)
         best = candidates[0]
         return best if best.effective_rr >= self.min_effective_rr else None
+
 
     def find_all_setups(
         self,
