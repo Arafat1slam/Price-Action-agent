@@ -22,27 +22,8 @@ import numpy as np
 import pandas as pd
 import joblib
 
-from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.metrics import (
-    accuracy_score,
-    balanced_accuracy_score,
-    classification_report,
-    f1_score,
-    log_loss,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-    brier_score_loss,
-)
-from sklearn.inspection import permutation_importance
-
-# Import FrozenEstimator for prefit calibration in scikit-learn >= 1.4
-try:
-    from sklearn.frozen import FrozenEstimator
-    HAS_FROZEN_ESTIMATOR = True
-except ImportError:
-    HAS_FROZEN_ESTIMATOR = False
+# Note: scikit-learn modules (HistGradientBoostingClassifier, metrics, calibration)
+# are imported lazily inside training and validation routines to accelerate platform boot time.
 
 
 # ============================================================================
@@ -749,6 +730,15 @@ class PurgedWalkForwardValidator:
         y: np.ndarray,
         raw_prices: Optional[np.ndarray] = None,
     ) -> WalkForwardValidationReport:
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        from sklearn.metrics import (
+            accuracy_score,
+            balanced_accuracy_score,
+            precision_score,
+            recall_score,
+            f1_score,
+        )
+
         n = len(X)
         fold_size = n // (self.n_splits + 1)
         folds_res: List[WalkForwardFoldResult] = []
@@ -922,6 +912,26 @@ class ModelTrainer:
         Fits base HistGradientBoostingClassifier, calibrates on validation set,
         evaluates metrics, and serializes artifact.
         """
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        from sklearn.calibration import CalibratedClassifierCV
+        from sklearn.metrics import (
+            accuracy_score,
+            balanced_accuracy_score,
+            classification_report,
+            f1_score,
+            log_loss,
+            precision_score,
+            recall_score,
+            roc_auc_score,
+            brier_score_loss,
+        )
+        from sklearn.inspection import permutation_importance
+        try:
+            from sklearn.frozen import FrozenEstimator
+            has_frozen_estimator = True
+        except ImportError:
+            has_frozen_estimator = False
+
         # 1. Base HistGradientBoostingClassifier
         base_estimator = HistGradientBoostingClassifier(
             loss="log_loss",
@@ -944,7 +954,7 @@ class ModelTrainer:
 
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore")
-            if HAS_FROZEN_ESTIMATOR:
+            if has_frozen_estimator:
                 calibrator = CalibratedClassifierCV(
                     estimator=FrozenEstimator(base_estimator),
                     method="sigmoid",

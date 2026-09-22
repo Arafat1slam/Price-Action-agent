@@ -20,8 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
-from scipy.signal import find_peaks
-from scipy.stats import gaussian_kde
+# Note: scipy.signal (find_peaks) and scipy.stats (gaussian_kde) are imported lazily inside methods to maximize startup speed.
 
 
 # ============================================================================
@@ -196,6 +195,7 @@ class VolumeProfileEngine:
         vah_price = float(bin_edges[up_idx + 1])
 
         # HVN & LVN Detection via Peak/Trough Finding
+        from scipy.signal import find_peaks
         vol_mean = float(np.mean(bin_volumes))
         vol_std = float(np.std(bin_volumes))
         prom = cfg.hvn_prominence_factor * vol_std if vol_std > 0 else 0.05 * vol_mean
@@ -817,6 +817,8 @@ class KDESupportResistanceEngine:
 
         # 3. Gaussian KDE Fitting with Adaptive ATR Bandwidth
         try:
+            from scipy.stats import gaussian_kde
+            from scipy.signal import find_peaks
             kde = gaussian_kde(pts_arr, weights=w_arr)
         except Exception:
             return KDESRResult(zones=[], nearest_support=None, nearest_resistance=None)

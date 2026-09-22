@@ -92,6 +92,7 @@ class BacktestConfig:
     volume_slippage: bool = True        # Non-linear volume participation market impact
     latency_ms: float = 85.0            # Simulated order execution latency (e.g. 85ms)
     intracandle_mode: str = "path"      # "path" (O->L->H->C / O->H->L->C) or "pessimistic"
+    execution_strategy: str = "MARKET"  # "POST_ONLY_LIMIT" (Maker fee, zero slippage) or "MARKET" (Taker fee, adverse slippage)
 
 
 def compute_dynamic_spread(
@@ -686,20 +687,56 @@ class BacktestEngine:
             volume_impact_enabled=cfg.volume_slippage,
         )
 
-        # Calculate fill price with adverse slippage and spread buffer
-        if signal.side == TradeSide.LONG:
-            fill_price = open_price * (1.0 + eff_slippage) * (1.0 + eff_spread)
-            if fill_price <= signal.stop_loss:
-                return None  # Invalidation: gapped past stop loss
-            risk_per_unit = fill_price - signal.stop_loss
-        else:
-            fill_price = open_price * (1.0 - eff_slippage) * (1.0 - eff_spread)
-            if fill_price >= signal.stop_loss:
-                return None  # Invalidation: gapped past stop loss
-            risk_per_unit = signal.stop_loss - fill_price
+        # Calculate fill price and fee rate based on configured execution strategy
+        is_post_only = (getattr(cfg, "execution_strategy", "MARKET") == "POST_ONLY_LIMIT") or (
+            signal.order_type == OrderType.LIMIT
+        )
 
-        if risk_per_unit <= 1e-8:
-            return None
+        if is_post_only:
+            # Post-Only Maker Limit Execution (Guarantees Maker Fee and 0 Adverse Slippage)
+            limit_target = signal.entry_price if signal.entry_price > 0 else open_price
+
+            if signal.side == TradeSide.LONG:
+                # Limit order fills only if candle retraces down to the limit level
+                if low_price > limit_target:
+                    return None  # Price did not tap limit zone; resting unfilled
+                # If price drops through stop loss without sustaining entry, order is cancelled with 0 loss
+                if low_price <= signal.stop_loss:
+                    return None
+                fill_price = limit_target
+                risk_per_unit = fill_price - signal.stop_loss
+            else:
+                # Limit order fills only if candle pulls up to the limit level
+                if high_price < limit_target:
+                    return None  # Price did not tap limit zone; resting unfilled
+                if high_price >= signal.stop_loss:
+                    return None
+                fill_price = limit_target
+                risk_per_unit = signal.stop_loss - fill_price
+
+            if risk_per_unit <= 1e-8:
+                return None
+
+            eff_slippage = 0.0
+            latency_slip = 0.0
+            entry_fee_rate = cfg.maker_fee
+        else:
+            # Market Taker Execution (Standard retail path with adverse slippage and taker fee)
+            if signal.side == TradeSide.LONG:
+                fill_price = open_price * (1.0 + eff_slippage) * (1.0 + eff_spread)
+                if fill_price <= signal.stop_loss:
+                    return None  # Invalidation: gapped past stop loss
+                risk_per_unit = fill_price - signal.stop_loss
+            else:
+                fill_price = open_price * (1.0 - eff_slippage) * (1.0 - eff_spread)
+                if fill_price >= signal.stop_loss:
+                    return None  # Invalidation: gapped past stop loss
+                risk_per_unit = signal.stop_loss - fill_price
+
+            if risk_per_unit <= 1e-8:
+                return None
+
+            entry_fee_rate = cfg.taker_fee
 
         # Position Sizing: Risk exactly cfg.risk_per_trade of current equity
         risk_dollar = current_equity * cfg.risk_per_trade
@@ -714,7 +751,7 @@ class BacktestEngine:
         if nominal_size <= 0:
             return None
 
-        entry_fee = nominal_size * fill_price * cfg.taker_fee
+        entry_fee = nominal_size * fill_price * entry_fee_rate
         slippage_cost = nominal_size * fill_price * eff_slippage
         latency_cost = nominal_size * fill_price * latency_slip
 
