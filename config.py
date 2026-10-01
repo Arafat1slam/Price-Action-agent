@@ -16,9 +16,10 @@ BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 # API Endpoints
 BINANCE_REST_BASE = "https://api.binance.com"
 BINANCE_REST_FALLBACKS = [
+    "https://data-api.binance.vision",
     "https://api1.binance.com",
     "https://api2.binance.com",
-    "https://api3.binance.com",
+    "https://api4.binance.com",
 ]
 BINANCE_WS_BASE = "wss://stream.binance.com:9443/ws"
 

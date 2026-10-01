@@ -5,7 +5,7 @@ import threading
 import requests
 import websocket
 import pandas as pd
-from typing import Callable, Optional, Dict, Any, List
+from typing import Callable, Optional, Dict, Any, List, Tuple
 
 from config import (
     BINANCE_REST_BASE,
@@ -15,6 +15,10 @@ from config import (
     logger,
 )
 from core.security import InputSanitizer, CredentialGuardian
+
+_SHARED_SESSION = requests.Session()
+_KLINE_CACHE: Dict[str, Tuple[float, pd.DataFrame]] = {}
+_KLINE_CACHE_TTL = 5.0  # seconds
 
 class BinanceClient:
     """
@@ -42,16 +46,27 @@ class BinanceClient:
     def fetch_historical_klines(self, limit: int = 150, interval: Optional[str] = None) -> pd.DataFrame:
         """
         Fetch historical Kline/Candlestick data via REST API.
-        Attempts primary endpoint and fallback endpoints.
+        Attempts primary endpoint and fallback endpoints with fast failover and caching.
         """
         active_interval = (interval or self.interval).lower()
+        cache_key = f"{self.symbol}_{active_interval}_{limit}"
+        now_ts = time.time()
+
+        if cache_key in _KLINE_CACHE:
+            cached_time, cached_df = _KLINE_CACHE[cache_key]
+            if now_ts - cached_time < _KLINE_CACHE_TTL:
+                return cached_df.copy()
+
         endpoints = [BINANCE_REST_BASE] + BINANCE_REST_FALLBACKS
         params = {
             "symbol": self.symbol,
             "interval": active_interval,
             "limit": limit
         }
-        headers = {}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json"
+        }
         if BINANCE_API_KEY:
             headers["X-MBX-APIKEY"] = BINANCE_API_KEY
 
@@ -59,19 +74,25 @@ class BinanceClient:
         for base_url in endpoints:
             url = f"{base_url}/api/v3/klines"
             try:
-                response = requests.get(url, params=params, headers=headers, timeout=10)
+                response = _SHARED_SESSION.get(url, params=params, headers=headers, timeout=4.5)
                 if response.status_code == 200:
                     raw_data = response.json()
                     df = self._format_kline_df(raw_data)
+                    _KLINE_CACHE[cache_key] = (now_ts, df)
                     logger.info(f"Loaded {len(df)} historical candles for {self.symbol} ({active_interval}) from {base_url}")
-                    return df
+                    return df.copy()
                 else:
-                    error_msg = f"HTTP {response.status_code}: {response.text}"
+                    error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
                     logger.warning(f"Failed to fetch from {url}: {error_msg}")
                     last_error = Exception(error_msg)
             except Exception as e:
                 logger.warning(f"Error connecting to {url}: {e}")
                 last_error = e
+
+        # Fallback to expired cache if available during network hiccup
+        if cache_key in _KLINE_CACHE:
+            logger.warning(f"Using stale cached klines for {self.symbol} ({active_interval}) due to upstream error.")
+            return _KLINE_CACHE[cache_key][1].copy()
 
         raise ConnectionError(f"Failed to fetch historical klines for {self.symbol} ({active_interval}) after trying all endpoints. Last error: {last_error}")
 
